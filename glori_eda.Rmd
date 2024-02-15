@@ -1,0 +1,602 @@
+---
+title: 'GLORI EDA'
+output:
+  html_document: default
+---
+
+GLORI EDA
+========================================================
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+# Load all of the packages that you end up using
+# in your analysis in this code chunk.
+library(tidyverse)
+library(readxl)
+library(biomaRt)
+library(fuzzyjoin)
+library(ggpubr)
+library(ggrepel)
+library(latex2exp)
+# GFF/GTF related libs
+library(rtracklayer) # Interacting with UCSC genome browser
+library(GenomicRanges)
+library(plyranges)
+library(GenomicFeatures)
+library(ensembldb) 
+```
+
+```{r echo=FALSE, Load_the_Data}
+# Load the Data
+## Can be changed
+data_folder = '/Users/faqih/Documents/UCPH/Thesis/code/data/GLORI_data/'
+
+overlap_repl_sites <- readxl::read_excel(paste(data_folder, 'identified_m6A_HEK29T.xlsx', sep=''))
+overlap_repl_sites$Sites <- as.integer(overlap_repl_sites$Sites)
+# Int conversion
+overlap_repl_sites$AGCov_rep1 <- as.integer(overlap_repl_sites$AGCov_rep1)
+overlap_repl_sites$AGCov_rep2 <- as.integer(overlap_repl_sites$AGCov_rep2)
+overlap_repl_sites <- overlap_repl_sites |> 
+  rename_with(tolower)
+# Average over replicates
+overlap_repl_sites <- overlap_repl_sites |> 
+  mutate(avg_m6a = (m6a_level_rep1 + m6a_level_rep1)/2)
+
+
+## Heat Shock MEF Data 
+heat_shock_MEF_up <- readxl::read_excel(paste(data_folder, 
+                                                       'heat_shock_m6A_sites_MEF.xlsx', 
+                                                       sep=''),
+                                                 sheet = 'HS UP m6A')
+heat_shock_MEF_down <- readxl::read_excel(paste(data_folder, 
+                                                       'heat_shock_m6A_sites_MEF.xlsx', 
+                                                       sep=''),
+                                                 sheet = 'HS Down m6A')
+heat_shock_MEF_unchange <- readxl::read_excel(paste(data_folder, 
+                                                       'heat_shock_m6A_sites_MEF.xlsx', 
+                                                       sep=''),
+                                                 sheet = 'HS un-change m6A')
+
+heat_shock_MEF <- rbind(heat_shock_MEF_up, heat_shock_MEF_down, heat_shock_MEF_unchange)
+# Int conversion
+heat_shock_MEF$start <- as.integer(heat_shock_MEF$start)
+heat_shock_MEF$end <- as.integer(heat_shock_MEF$end)
+heat_shock_MEF$log10pvalue <- as.numeric(heat_shock_MEF$log10pvalue)
+
+
+## Hypoxia HeLa Data 
+hypoxia_HeLa_up <- readxl::read_excel(paste(data_folder, 
+                                              'hypoxia_m6A_sites_HeLa.xlsx', 
+                                              sep=''),
+                                        sheet = 'Hypoxia UP m6A')
+hypoxia_HeLa_down <- readxl::read_excel(paste(data_folder, 
+                                                'hypoxia_m6A_sites_HeLa.xlsx', 
+                                                sep=''),
+                                          sheet = 'Hypoxia Down m6A')
+hypoxia_HeLa_unchange <- readxl::read_excel(paste(data_folder, 
+                                                    'hypoxia_m6A_sites_HeLa.xlsx', 
+                                                    sep=''),
+                                              sheet = 'Hypoxia un-change m6A')
+
+hypoxia_HeLa <- rbind(hypoxia_HeLa_up, hypoxia_HeLa_down, hypoxia_HeLa_unchange)
+# Int conversion
+hypoxia_HeLa$start <- as.integer(hypoxia_HeLa$start)
+hypoxia_HeLa$end <- as.integer(hypoxia_HeLa$end)
+hypoxia_HeLa$log10pvalue <- as.numeric(hypoxia_HeLa$log10pvalue)
+# Renaming direction since there is two values: Hypoxia and hypoxia 
+hypoxia_HeLa$direction <- str_to_sentence(hypoxia_HeLa$direction)
+
+# renaming
+heat_shock_MEF <- heat_shock_MEF |> 
+  rename('chr'='seqnames')
+hypoxia_HeLa <- hypoxia_HeLa |> 
+  rename('chr'='seqnames')
+ 
+summary_data <- rbind( hypoxia_HeLa |> 
+                         group_by(direction, label) |> 
+                         count() |> ungroup() |> 
+                         arrange(label),
+                       heat_shock_MEF |>
+                         group_by(direction, label) |> 
+                         count() |> ungroup() |> 
+                         arrange(label)) 
+
+summary_data <- summary_data |>
+  pivot_wider(names_from = label, values_from = n) |>
+  rowwise(direction) |>
+  mutate(total = sum(c(`Down-regulated m6A`,`Unchanged m6A`, `Up-regulated m6A`))) |>
+  ungroup() |> 
+  rename('label'='direction')
+
+summary_data <- rbind(summary_data, list('HEK293T m6A Overlap Repl Sites', NA, NA, NA, dim(overlap_repl_sites)[1]))
+
+print(summary_data)
+
+rm(hypoxia_HeLa_up, hypoxia_HeLa_down, hypoxia_HeLa_unchange)
+rm(heat_shock_MEF_up, heat_shock_MEF_down, heat_shock_MEF_unchange)
+```
+
+NOTE!!!: We can see there is a difference between the data provided and the GLORI paper. It seems that the Hypoxia and HS data are somehow interchanged.
+
+
+# Counting m6A for each chromosomes 
+```{r}
+library(ggplot2)
+## For plots or analysis
+chr_order <- c('chr1','chr2','chr3','chr4','chr5','chr6','chr7',
+                            'chr8','chr9','chr10','chr11','chr12','chr13','chr14',
+                            'chr15','chr16','chr17','chr18','chr19','chr20','chr21',
+                            'chr22','chrX','chrY','chrM') 
+overlap_repl_count <- overlap_repl_sites |> 
+  group_by(chr) |> 
+  count() |> 
+  mutate(data='repl_sites_HEK293T')
+HeLa_count <- hypoxia_HeLa |> 
+  group_by(chr) |> 
+  count() |> 
+  mutate(data='HeLa_hypox')
+MEF_count <- heat_shock_MEF |> 
+  group_by(chr) |> 
+  count() |> 
+  mutate(data='MEF_heat')
+
+count_data <- rbind(HeLa_count, MEF_count, overlap_repl_count)
+rm(HeLa_count, MEF_count, overlap_repl_count)
+
+
+count_data <- count_data |> 
+  pivot_wider(names_from = data, values_from = n) |> 
+  mutate(chr = factor(chr, levels = chr_order)) |> 
+  arrange(chr)
+
+print(count_data)
+
+```
+
+Notice different count of m6A sites for each of the cell type of different conditions. In heat_shock, MEF doesn't have any m6A data at chr20, chr21, and chr22. It might be due to several reasons which were not covered on the paper. First, the sites might not have site either on the control or on the treatment environment. Second, it might be that those sites don't have any m6A sites.
+
+However, when we see the intersection of replicates within a normal condition of HEK293T cells, those chromosomes have m6A site. Therefore, the former hypothesis might be the reason.
+
+```{r}
+# Create the density plot and the distribution of the value 
+ggplot(overlap_repl_sites, aes(x = avg_m6a*100)) +
+  geom_density(color = "brown", size = 1) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank()) +
+  labs(x = "Methylation level (%)", y = "Density")
+
+ggplot(overlap_repl_sites, aes(x = 'overlap sites', y = avg_m6a*100)) +  
+  geom_violin(aes(fill="orange")) +     
+  geom_boxplot(width=0.1) + 
+  theme_bw() + 
+  labs(y = "Methylation levle (%)")
+```
+We can see that the median of the m6A rate is ~40%. In addition, most of the sites are considered not to have methylation modification (<50%).
+
+
+In addition, we see that neither HeLa hypoxia nor the MEF heat shock data contain gene annotation at it. Thus, we will annotate it using the longest transcript using the GLORI annotation tools found on its GitHub page. 
+
+
+# Running the GLORI annotation pipeline using p.14 NCBI GTF file
+```{bash}
+# This script is used to create the annotation file for the human genome
+# The annotation python scripts were downloaded from GLORI GitHub repository
+
+# Download the human genome annotation file
+#mkdir -p data/annot_ref/
+#wget  https://ftp.ncbi.nlm.nih.gov/refseq/H_sapiens/annotation/annotation_releases/GCF_000001405.40-RS_2023_03/GCF_000001405.40_GRCh38.p14_assembly_report.txt 
+
+#wget https://ftp.ncbi.nlm.nih.gov/refseq/H_sapiens/annotation/annotation_releases/GCF_000001405.40-RS_2023_03/GCF_000001405.40_GRCh38.p14_genomic.gtf.gz 
+
+#conda activate thesis
+
+# Patch the GTF file based on the assembly report
+#python GLORI/get_anno/change_UCSCgtf.py -i data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gtf -j data/annot_ref/GCF_000001405.40_GRCh38.p14_assembly_report.txt -o data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gtf_change2Ens
+
+# Get exon start and end
+#python GLORI/get_anno/gtf2anno.py -i data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gtf_change2Ens -o data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gtf_change2Ens.tbl
+
+# Filtering the unknown transcript
+#awk '$3!~/_/&&$3!="na"' data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gtf_change2Ens.tbl | sed '/unknown_transcript/d'  > data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gtf_change2Ens.tbl2
+
+# Get the longest transcript for each gene
+#python GLORI/get_anno/selected_longest_transcrpts_fa.py -anno data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gtf_change2Ens.tbl2  --outname_prx data/annot_ref/GCF_000001405.39_GRCh38.p13_rna2
+```
+
+
+
+# Get gene annotation 
+```{r}
+# Filtered LONGEST TRANSCRIPT from h38.p14 GTF (GCF_000001405.40_GRCh38.p14_genomic.gtf.gz)
+# See GLORI Github page for the pipeline of filtering longest transcript
+
+longest_transcript <- read.table('data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gtf.translength.longest.trans',
+                                 col.names=c('chr','start','end','length',
+                                             'gene','strand','transcript'), skip=1)
+hypoxia_HeLa_annot <- fuzzyjoin::genome_join(hypoxia_HeLa, longest_transcript, 
+                                             by = c("chr", "start", "end"), 
+                       mode = "left") 
+
+hypoxia_HeLa_annot <- hypoxia_HeLa_annot |> 
+  dplyr::select(!c('chr.y')) |> 
+  rename('chr'='chr.x', 'start'='start.x', 'end'='end.x',
+         'max_start'='start.y', 'max_end'='end.y')
+
+
+heat_shock_MEF_annot <- fuzzyjoin::genome_join(heat_shock_MEF, longest_transcript, 
+                                             by = c("chr", "start", "end"), 
+                                             mode = "left") 
+
+heat_shock_MEF_annot <- heat_shock_MEF_annot |> 
+  dplyr::select(!c('chr.y')) |> 
+  rename('chr'='chr.x', 'start'='start.x', 'end'='end.x',
+         'max_start'='start.y', 'max_end'='end.y')
+
+print(hypoxia_HeLa_annot)
+print(heat_shock_MEF_annot)
+
+
+```
+
+We can see that there are several regions which have null value of the join result. It might be that the region is actually not containing any gene i.e. chr1  10806198 10806198 on heat shock.  
+```{r}
+# There might be several genes on a position. Check: 
+print(heat_shock_MEF_annot |> group_by(chr, start, end) |> count() |> arrange(desc(n)))
+print(heat_shock_MEF_annot |> filter(chr=='chr5', start==141410368, end==141410368))
+print(hypoxia_HeLa_annot |> group_by(chr, start, end) |> count() |> arrange(desc(n)))
+print(hypoxia_HeLa_annot |> filter(chr=='chr12', start==10996111, end==10996111))
+
+# Count of non-annotated pos: 
+print(heat_shock_MEF_annot |> filter(is.na(gene)))
+print(hypoxia_HeLa_annot |> filter(is.na(gene)))
+```
+
+
+# %m6A Distribution of Hypoxia and HS 
+```{r}
+
+heat_shock_dist <- heat_shock_MEF |> 
+  dplyr::select(c('meth_case','meth_control')) |> 
+  pivot_longer(cols = starts_with('meth_'), names_to = 'label',
+               values_to = 'm6A_rate') |> 
+  mutate(data='HeLa_Hypoxia')
+
+hypoxia_HeLa_dist <- hypoxia_HeLa |> 
+  dplyr::select(c('meth_case','meth_control')) |> 
+  pivot_longer(cols = starts_with('meth_'), names_to = 'label',
+               values_to = 'm6A_rate') |> 
+  mutate(data='MEF_Heat_Shock')
+
+dist_data <- rbind(heat_shock_dist, hypoxia_HeLa_dist)
+
+comps <- c('meth_control', 'meth_case')
+dist_plot <- ggplot(dist_data,aes(x= label, y = m6A_rate)) + 
+  geom_violin(aes(fill=label)) +     
+  geom_boxplot(width=0.1) +  ggtitle(label = "Distribution Control vs Case") +
+  facet_grid(cols = vars(data)) + 
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  theme_bw() +
+  stat_compare_means(method = "wilcox.test") # Add two-sided test
+
+dist_plot 
+
+dist_data |> 
+  group_by(data, label) |> 
+  summarise(mean(m6A_rate), .groups = 'drop')
+```
+
+From the distribution of m6A rate per cases, we can see that Hypoxia in HeLa cell shifts the distribution of m6A_rate to be significantly higher compared to control (p-val <0.05). Moreover, there is also significant (p-val <0.05)  different in m6A_rate between the Heat Shock treated and control group. However, this overall different in distribution does not depict the stoichiometry since there might be increment of methylation on a particular regions and also decrement of methylation on other regions.
+
+
+Next, we will show the volcano plot and analyse the significant genes
+```{r}
+heat_shock_delta_m6A <- heat_shock_MEF_annot |> 
+  dplyr::select(c('meth_diff','log10pvalue', 'label', 'gene')) |> 
+  mutate(data='HeLa_Hypoxia')
+
+hypoxia_delta_m6A <- hypoxia_HeLa_annot |> 
+  dplyr::select(c('meth_diff','log10pvalue', 'label', 'gene')) |> 
+  mutate(data='MEF_Heat_Shock')
+
+delta_m6A_data <- rbind(heat_shock_delta_m6A, hypoxia_delta_m6A)
+
+
+ggplot(data = delta_m6A_data, mapping = aes(x = meth_diff, y = log10pvalue)) + 
+  geom_point(alpha=0.25, mapping = aes(colour = label), size = 0.8)  +
+  ylim(0, 20) +
+  geom_vline(xintercept=c(-15,15),lty=2,col="black") +
+  geom_hline(yintercept = -log10(0.05),lty=4,col="black") +
+  geom_text_repel(data = delta_m6A_data[delta_m6A_data$label!='Unchanged m6A' & !is.na(delta_m6A_data$gene),]
+                  , mapping = aes(label = gene), max.overlaps = 35, size = 2,
+                  point.size = NA) +
+  scale_color_manual(values=c("blue", "gray", "red")) +
+  #annotate("text", x = 65, y = 2, label = paste0("n = ", delta_m6A_data |>  count()), size = 3, fontface = "bold", color = "red") + # Label to horizontal cut-off line.
+  facet_wrap(vars(data)) + 
+  labs(x="delta %m6A",
+       y=TeX(r"($-log_{10}p$)"),
+       title="Stress Induced Response")  +
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.position="bottom", 
+        legend.title = element_blank())
+```
+
+```{r}
+# Print HSPA related genes 
+print(heat_shock_MEF_annot |> 
+        drop_na() |> 
+        dplyr::select(c(chr,start,end,meth_diff,log10pvalue,label,gene)) |> 
+        filter(grepl('(?i)hsp|HSPA|IRS3|VEGFA|EGLN', gene)) |> 
+        arrange(chr, start, end)) 
+  
+
+# Print Hypoxia related genes 
+print(hypoxia_HeLa_annot |> 
+        drop_na() |> 
+        dplyr::select(c(chr,start,end,meth_diff,log10pvalue,label,gene)) |> 
+        filter(grepl('HSPA|IRS3|VEGFA|EGLN', gene)) |> 
+        arrange(chr, start, end)) 
+```
+
+
+
+```{r}
+# Print HSPA related genes 
+print(heat_shock_MEF_annot |> 
+        drop_na() |> 
+        dplyr::select(c(chr,start,end,meth_diff,log10pvalue,label,gene)) |> 
+        filter(grepl('HSPA', gene)) |> 
+        arrange(chr, start, end)) 
+  
+
+# Print Hypoxia related genes 
+print(hypoxia_HeLa_annot |> 
+        drop_na() |> 
+        dplyr::select(c(chr,start,end,meth_diff,log10pvalue,label,gene)) |> 
+        filter(grepl('IRS3|VEGFA|EGLN', gene)) |> 
+        arrange(chr, start, end)) 
+```
+
+
+
+
+# Looking at the GRE data. HeLA and Hypox related RAW Data
+```{r}
+GRE_folder = '/Users/faqih/Documents/UCPH/Thesis/papers/GLORI/GLORI_data/GSE210563_RAW/'
+hela_1 <- read.csv(paste0(GRE_folder,'GSM6432595_Hela-1_35bp_m2.totalm6A.FDR.csv'), sep = "\t")
+hela_2 <- read.csv(paste0(GRE_folder,'GSM6432596_Hela-2_35bp_m2.totalm6A.FDR.csv'), sep = "\t")
+
+hypox_hela_1 <- read.csv(paste0(GRE_folder,'GSM6432598_hypoxia-1_35bp_m2.totalm6A.FDR.csv'), sep = '\t')
+hypox_hela_2 <- read.csv(paste0(GRE_folder,'GSM6432599_hypoxia-2_35bp_m2.totalm6A.FDR.csv'), sep = '\t')
+
+# Note: ELSE for gene_name and transcript represents unknown gene and/or transcript.
+```
+
+```{r}
+print(dim(hela_1))
+print(dim(hela_2))
+print(dim(hypox_hela_1))
+print(dim(hypox_hela_2))
+```
+```{r}
+head(hypox_hela_1, n = 20)
+```
+```{r}
+head(hypox_hela_2, n = 20)
+```
+
+```{r}
+hypox_join <- fuzzyjoin::genome_join(hypox_hela_1, hypox_hela_2, 
+                                             by = c("Chr", "Sites", "Sites"), 
+                       mode = "inner") 
+
+print(hypox_hela_2)
+```
+
+
+
+
+
+# Creating the geneannotation from ENSEMBL
+```{r}
+# GFF3 data from ENSEMBL FTP 
+human_gff_path_ensembl <- 'data/annot_ref/Homo_sapiens.GRCh38.111.gff3'
+# Creating ensembldB (MariaDb)
+GFF_dB <- ensembldb::ensDbFromGff(human_gff_path_ensembl)
+# Converting into EnsDb object
+human_TxDb_ensembl <- ensembldb::EnsDb(GFF_dB)
+# Get the transcript length from TxDb
+human_Tx_length_ensembl <- transcriptLengths(human_TxDb_ensembl,
+                  with.cds_len=TRUE, with.utr5_len=TRUE, with.utr3_len=TRUE)
+
+# NOTES:
+# 'tx_len' in a lot of cases will not be the same as the 'width' column.
+#   The reason behind it is that tx_len not consider intron length.
+#   width of a transcript includes the Introns! while tx_len includes cds, utr5 and utr 3 only
+# cds_len, utr5_len, utr3_len, hvae values of zero if bio
+# tx_cds_seq_start/end has value of NA ()
+# Remember that Transcription start upstream of TATA Box (~30%). It also contain several things such as 
+# BRE(upstream of TATA) which acts as TFIIB recognition element, INR (initiator element)
+# or other promoters such as MTE and DTE which upstream the TSS.
+temp_info <- transcripts(human_TxDb_ensembl, 
+                         filter=TxIdFilter(rownames(human_Tx_length_ensembl)), 
+                         columns=c("tx_name", "gene_id", "gene_name", 
+                                   "gene_biotype", 'tx_seq_start', 
+                                   'tx_cds_seq_start', 'tx_cds_seq_end', 
+                                   'tx_seq_end'))
+
+human_Tx_ensembl_data <- S4Vectors::merge(human_Tx_length_ensembl, temp_info, 
+                                    by.x = 'tx_id', by.y = 'tx_name', all.x=TRUE)
+
+# Filtering the longest transcript (width) only for each gene
+# it still contain numbers of non mRNA gene: i.e. rRNA, tRNA, Mt_RNA, etc.
+human_Tx_ensembl_data <- human_Tx_ensembl_data |> 
+  dplyr::group_by(gene_id.x) |> 
+  dplyr::filter(width == max(width)) |> 
+  # Since several transcripts could have the same start and end.
+  # need to filter by tx_len (CDS + UTRs)
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() |> 
+  dplyr::select(!c(tx_name, gene_id.y, tx_id.y)) |> 
+  dplyr::rename('gene_id'='gene_id.x', 'chr'='seqnames') |> 
+  dplyr::relocate(c('gene_name','gene_biotype'), .after = c('gene_id')) |> 
+  dplyr::relocate(c('tx_id','chr','start','end','width','strand'), 
+                  .after = c('gene_biotype'))
+
+rm(temp_info, human_Tx_length_ensembl)
+```
+
+
+# FROM NCBI 
+```{r}
+# Get GFF 
+# Incorrect chr info for NCBI gff? https://www.biostars.org/p/9552902/
+human_gff_ncbi_path <- 'data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gff'
+human_gff_ncbi_report_path <- 'data/annot_ref/GCF_000001405.40_GRCh38.p14_assembly_report.txt'
+
+# Load transcripts DB
+human_TxDb_ncbi <- makeTxDbFromGFF(file=human_gff_ncbi_path, format = 'gff3',
+                                   organism = 'Homo sapiens')
+
+# NOTE: GFF from NCBI doesn't contain straight forward chromosome name
+# Thus we need to use the report assembly and the seqnames (RefSeq-Accn) 
+# into UCSC-style-name later
+human_gff_ncbi_report <- read.csv(human_gff_ncbi_report_path, comment = '#', 
+                                  sep='\t', header = FALSE, 
+                                  col.names = c("Sequence-Name","Sequence-Role",
+                                                "Assigned-Molecule",
+                                                "Assigned-Molecule-Location/Type",
+                                                "GenBank-Accn","Relationship",
+                                                "RefSeq-Accn","Assembly-Unit",
+                                                "Sequence-Length","UCSC-style-name")
+                                  )
+
+# load transcripts GR
+human_Tx_ncbi <- transcripts(human_TxDb_ncbi, columns = c("tx_id", "tx_name", "TXTYPE"))
+# get length of transcripts
+human_Tx_length_ncbi <- transcriptLengths(human_TxDb_ncbi,
+                  with.cds_len=TRUE, with.utr5_len=TRUE, with.utr3_len=TRUE)
+
+# Calculating CDS start/end. Reference: https://support.bioconductor.org/p/9154904/
+cds_start <- start(human_Tx_ncbi) +
+             ifelse(strand(human_Tx_ncbi) == "+", human_Tx_length_ncbi$utr5_len, 
+                    human_Tx_length_ncbi$utr3_len)
+cds_end   <- end(human_Tx_ncbi)   -
+             ifelse(strand(human_Tx_ncbi) == "+", human_Tx_length_ncbi$utr3_len, 
+                    human_Tx_length_ncbi$utr5_len)
+
+no_cds_idx <- which(human_Tx_length_ncbi$cds_len == 0L)
+cds_start[no_cds_idx] <- NA
+cds_end[no_cds_idx]   <- NA
+
+mcols(human_Tx_ncbi)$cds_start <- cds_start
+mcols(human_Tx_ncbi)$cds_end   <- cds_end
+
+human_Tx_ncbi_data <- S4Vectors::merge(human_Tx_length_ncbi, human_Tx_ncbi, 
+                                       by.x = 'tx_id', by.y = 'tx_id', all.x=TRUE)
+
+
+# Filtering the longest transcript (width) only for each gene
+# it still contain numbers of non mRNA gene: i.e. rRNA, tRNA, Mt_RNA, etc.
+human_Tx_ncbi_data <- human_Tx_ncbi_data |> 
+  dplyr::group_by(gene_id) |> 
+  dplyr::filter(width == max(width)) |> 
+  # Since several transcripts could have the same start and end.
+  # need to filter by tx_len (CDS + UTRs)
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() |> 
+  # Join with assembly report to get the UCSC style chromosome name
+  dplyr::inner_join(human_gff_ncbi_report |> 
+                      dplyr::select(RefSeq.Accn, UCSC.style.name),
+                    by = dplyr::join_by(seqnames == RefSeq.Accn)) |> 
+  dplyr::select(!c(tx_name.y, tx_id, seqnames)) |> 
+  dplyr::rename('gene_biotype'='TXTYPE', 'gene'='gene_id',
+                'tx_id'='tx_name.x', 'chr'='UCSC.style.name') |> 
+  dplyr::relocate(c('gene_biotype'), .after = c('gene')) |>
+  dplyr::relocate(c('tx_id','chr','start','end','width','strand'), 
+                  .after = c('gene_biotype'))
+
+rm(cds_start, cds_end, no_cds_idx, human_Tx_length_ncbi, human_Tx_ncbi)
+```
+# Sanity check from RAW GLORI with NCBI GFF3
+```{r}
+# Checking the inetrsection from RAW GLORI with NCBI p.14
+join_raw_GLORI_ncbi <- hypox_hela_1 |> 
+  dplyr::left_join(human_Tx_ncbi_data |> 
+                     dplyr::select(gene, gene_biotype) |> 
+                     dplyr::distinct(gene, gene_biotype), 
+                   by = dplyr::join_by(Gene == gene), keep = TRUE)
+
+na_type <- join_raw_GLORI_ncbi |> 
+  dplyr::filter(is.na(gene), Gene != 'ELSE')
+na_type_gene <- join_raw_GLORI_ncbi |> 
+  dplyr::filter(is.na(gene), Gene != 'ELSE') |> 
+  dplyr::distinct(Gene)
+
+print(dim(na_type_gene))
+
+
+# Check in GTF file 
+transcripts(human_TxDb_ncbi, columns = c("tx_id", "tx_name", "TXTYPE"), RPARP-AS1  
+            filter=list(gene_id=na_type_gene))
+# Nothing. Don't know from where GLORI got additional 930 genes
+# But mostly it is pseudogene. I think it comes from different patch version
+# p.13 vs p.14
+```
+Question: why there' sstill missing Genes? when check 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+# ENSMBL BiomaRt scratch
+```{r echo=FALSE, Univariate_Plots}
+write.table(listAttributes(mart), file='list_attr.txt')
+coba <- getBM(attributes = c('ensembl_transcript_id', '5_utr_start', '5_utr_end',
+                                        '3_utr_start', '3_utr_end', 'genomic_coding_start', 
+                                        'genomic_coding_start'),
+                         filters = 'ensembl_gene_id',
+                         values = 'ENSG00000272438',
+                         mart = mart)
+# TTN example
+getBM(
+     attributes = c('hgnc_symbol', 'gene_biotype', 'ensembl_gene_id', 'ensembl_transcript_id', 'ensembl_transcript_id_version'),
+     filters = c('chromosome_name', 'start', 'end'),
+     values = list(2, 178807422, 178807422),
+     mart
+ )
+
+# get start stop for each transcript id 
+# TTN example
+getBM(
+     attributes = c('hgnc_symbol','5_utr_start', '5_utr_end'),
+     filters = 'ensembl_gene_id',
+     values = 'NM_001267550.2',
+     mart
+ )
+
+
+attributes <- c('ensembl_transcript_id', 
+                '5_utr_start', '5_utr_end', 
+                '3_utr_start', '3_utr_end')
+
+# For the sake of example, let's assume `ensembl_transcript_ids` contains the mapped IDs
+ids <- c('NM_001101', 'NM_001256799', 'NM_000594')
+
+getBM(attributes = attributes,
+                 filters = 'refseq_mrna',
+                 values = ids,
+                 mart = mart)
+```
