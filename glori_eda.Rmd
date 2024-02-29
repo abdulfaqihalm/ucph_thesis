@@ -22,7 +22,8 @@ library(rtracklayer) # Interacting with UCSC genome browser
 library(GenomicRanges)
 library(plyranges)
 library(GenomicFeatures)
-library(ensembldb) 
+library(ensembldb)
+library(Guitar)
 # For dealing with bamfiles
 library(Rsamtools)
 ```
@@ -383,12 +384,12 @@ The number of m6A reads for each detected m6A site was calculated as A rate × c
 data_path <- '/Users/faqih/Documents/UCPH/Thesis/code/data/'
 
 # A rate serving as the m6A level
+# Has transcript and gene info
 GRE_folder = '/Users/faqih/Documents/UCPH/Thesis/papers/GLORI/GLORI_data/GSE210563_RAW/'
 hela_1 <- read.csv(paste0(GRE_folder,'GSM6432595_Hela-1_35bp_m2.totalm6A.FDR.csv'), sep = "\t")
 hela_2 <- read.csv(paste0(GRE_folder,'GSM6432596_Hela-2_35bp_m2.totalm6A.FDR.csv'), sep = "\t")
 mef_1 <- read.csv(paste0(GRE_folder,'GSM6432601_MEF-1_35bp_m2.totalm6A.FDR.csv'), sep = "\t")
 mef_2 <- read.csv(paste0(GRE_folder,'GSM6432602_MEF-2_35bp_m2.totalm6A.FDR.csv'), sep = "\t")
-
 hypox_hela_1 <- read.csv(paste0(GRE_folder,'GSM6432598_hypoxia-1_35bp_m2.totalm6A.FDR.csv'), sep = '\t')
 hypox_hela_2 <- read.csv(paste0(GRE_folder,'GSM6432599_hypoxia-2_35bp_m2.totalm6A.FDR.csv'), sep = '\t')
 hs_mef_1 <- read.csv(paste0(GRE_folder,'GSM6432604_HS-1_35bp_m2.totalm6A.FDR.csv.gz'), sep = '\t')
@@ -396,55 +397,15 @@ hs_mef_2 <- read.csv(paste0(GRE_folder,'GSM6432605_HS-2_35bp_m2.totalm6A.FDR.csv
 
 #NOTES:
 #   hypox_hela_2 |>  inner_join(heat_shock_MEF, by = dplyr::join_by(Chr==chr, Sites==start)) RETURNING SMALL NUMBER OF SITES (4)
-#   hypox_hela_2 |>  inner_join(hypoxia_HeLa, by = dplyr::join_by(Chr==chr, Sites==start)) RETURNING >80K sites. THUS HYPOXIA_HELA IS INDEED HYPOXIA? 
+#   hypox_hela_2 |>  inner_join(hypoxia_HeLa, by = dplyr::join_by(Chr==chr, Sites==start)) RETURNING >80K sites. THUS HYPOXIA_HELA IS INDEED HYPOXIA IN THE DATA? 
 # This is conversely the sdame for the MEF-HS.
 # Conclusion: the supplementary tables are indeed true. The publisehd figures' labels were False? 
-
-# Write cov data. Required for methylSig beta binom diffd 
-write.table(hela_1 |> 
-              mutate(Ratio = as.numeric(Ratio) * 100, start=Sites, end=Sites) |> 
-              select(Chr, start, end, Ratio, Acov, AGcov),  # Ensure Ratio is numeric
-            file = paste0(data_path, "GLORI_data/hela_1.cov"), sep = "\t", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
-write.table(hela_2 |> 
-              mutate(Ratio = as.numeric(Ratio) * 100, start=Sites, end=Sites) |> 
-              select(Chr, start, end, Ratio, Acov, AGcov),  # Ensure Ratio is numeric
-            file = paste0(data_path, "GLORI_data/hela_2.cov"), sep = "\t", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
-write.table(hypox_hela_1 |> 
-              mutate(Ratio = as.numeric(Ratio) * 100, start=Sites, end=Sites) |> 
-              select(Chr, start, end, Ratio, Acov, AGcov),  # Ensure Ratio is numeric
-            file = paste0(data_path, "GLORI_data/hypox_hela_1.cov"), sep = "\t", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
-write.table(hypox_hela_2 |> 
-              mutate(Ratio = as.numeric(Ratio) * 100, start=Sites, end=Sites) |> 
-              select(Chr, start, end, Ratio, Acov, AGcov),  # Ensure Ratio is numeric
-            file = paste0(data_path, "GLORI_data/hypox_hela_2.cov"), sep = "\t", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
-
-
-write.table(mef_1 |> 
-              mutate(Ratio = as.numeric(Ratio) * 100, start=Sites, end=Sites) |> 
-              select(Chr, start, end, Ratio, Acov, AGcov),  # Ensure Ratio is numeric
-            file = paste0(data_path, "GLORI_data/mef_1.cov"), sep = "\t", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
-write.table(mef_2 |> 
-              mutate(Ratio = as.numeric(Ratio) * 100, start=Sites, end=Sites) |> 
-              select(Chr, start, end, Ratio, Acov, AGcov),  # Ensure Ratio is numeric
-            file = paste0(data_path, "GLORI_data/mef_2.cov"), sep = "\t", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
-write.table(hs_mef_1 |> 
-              mutate(Ratio = as.numeric(Ratio) * 100, start=Sites, end=Sites) |> 
-              select(Chr, start, end, Ratio, Acov, AGcov),  # Ensure Ratio is numeric
-            file = paste0(data_path, "GLORI_data/hs_mef_1.cov"), sep = "\t", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
-write.table(hs_mef_2 |> 
-              mutate(Ratio = as.numeric(Ratio) * 100, start=Sites, end=Sites) |> 
-              select(Chr, start, end, Ratio, Acov, AGcov),  # Ensure Ratio is numeric
-            file = paste0(data_path, "GLORI_data/hs_mef_2.cov"), sep = "\t", 
-            row.names = FALSE, col.names = FALSE, quote = FALSE)
+# In addition when doing: 
+# hela_1 |> inner_join(hela_2, by = dplyr::join_by(Chr==Chr, Sites==Sites)) |> inner_join(hypox_hela_1, by = dplyr::join_by(Chr==Chr, Sites==Sites)) |> inner_join(hypox_hela_2, by = dplyr::join_by(Chr==Chr, Sites==Sites)) 
+# We get 74,032 intersection sites across the control and hypox groups.
 
 # Note: ELSE for gene_name and transcript represents unknown gene and/or transcript.
+# When the absolute change of m6A modification level between untreated and stressed was greater than 15% and the P value was less than 0.05, it was considered to be a dynamic m6A.
 ```
 
 ```{r}
@@ -455,7 +416,6 @@ print(dim(hypox_hela_2))
 ```
 
 # Hela-Hypoxia
-When the absolute change of m6A modification level between untreated and stressed was greater than 15% and the P value was less than 0.05, it was considered to be a dynamic m6A.
 ```{r}
 #hypoxia_HeLa
 #chr    start    end meth_case meth_control meth_diff direction    pvalue      fdr log_lik_ratio  log10pvalue label
@@ -474,48 +434,44 @@ hypox_hela_2 |> filter(Chr == "chr1", Sites == 185038) # Ratio 0.64706 NormeRati
 library(methylSig)
 library(bsseq)
 
-file_paths <- c(
-                paste0(data_path, "GLORI_data/hela_1.cov"), 
-                paste0(data_path, "GLORI_data/hela_2.cov"), 
-                paste0(data_path, "GLORI_data/hypox_hela_1.cov"), 
-                paste0(data_path, "GLORI_data/hypox_hela_2.cov"))  # Corrected to include hypox_hela_2.cov
+# genomic positions, including chromosome and location, for methylation loci.
+# a (matrix) of M (Methylation) values, describing the number of read supporting methylation covering a single loci. Each row in this matrix is a methylation loci and each column is a sample.
+# a (matrix) of Cov (Coverage) values, describing the total number of reads covering a single loci. Each row in this matrix is a methylation loci and each column is a sample.
 
-# Corrected colData with a row for each file
-colData <- DataFrame(condition = c(
-                                   "control", 
-                                   "control", 
-                                   "hypox", 
-                                   "hypox"),
-                     replicate = c(
-                                   1, 
-                                   2, 
-                                   1, 
-                                   2))
-row.names(colData) <- c(
-                        "hela_1",
-                        "hela_2", 
-                        "hypox_hela_1",
-                        "hypox_hela_2")
-# Ensure colData has the same number of rows as there are files
-if (length(file_paths) != nrow(colData)) {
-    stop("The number of files does not match the number of rows in colData.")
-}
+temp <- hela_1 |> select(Chr, Sites, Ratio, Acov, AGcov) |> 
+  inner_join(hela_2 |>  
+               select(Chr, Sites, Ratio, Acov, AGcov), 
+             by = dplyr::join_by(Chr==Chr, Sites==Sites)) |> 
+  inner_join(hypox_hela_1 |>
+               select(Chr, Sites, Ratio, Acov, AGcov), 
+             by = dplyr::join_by(Chr==Chr, Sites==Sites)) |> 
+  inner_join(hypox_hela_2 |>
+               select(Chr, Sites, Ratio, Acov, AGcov), 
+             by = dplyr::join_by(Chr==Chr, Sites==Sites)) 
 
-# Read the files with bsseq::read.bismark
-bsseq_data <- bsseq::read.bismark(file_paths, 
-                                   BPPARAM = BiocParallel::MulticoreParam(workers = 3, 
-                                                                          progressbar = FALSE),
-                                  verbose=TRUE,
-                                  )
-pData(bsseq_data) <- colData
-pData(bsseq_data)
+M <- cbind(temp$Acov.x, temp$Acov.y, temp$Acov.x.x, temp$Acov.y.y)
+Cov <- cbind(temp$AGcov.x, temp$AGcov.y, temp$AGcov.x.x, temp$AGcov.y.y)
+BStmp <- BSseq(chr = temp$Chr, pos = temp$Sites, 
+               M = M, Cov = Cov, sampleNames = c("hela_1","hela_2", "hypox_hela_1", "hypox_hela_2"))
+
+head(bsseq::getCoverage(BStmp, type = 'M'))
+#hela_1 |> filter(Acov==2221)
+head(bsseq::getCoverage(BStmp, type = 'Cov'))
+
+colData <- DataFrame(condition = c("control","control","hypox","hypox"),
+                     replicate = c(1, 2, 1, 2))
+
+pData(BStmp) <- colData
+pData(BStmp)
 # Require at least two samples from control and two samples from hypox
 bsseq_data_filtered = filter_loci_by_group_coverage(
-    bs = bsseq_data,
+    bs = BStmp,
     group_column = 'condition',
-    c('control' = 2, 'hypox' = 2))
+    c('control' = 1, 'hypox' = 1))
 # Methylation matrix
 #head(bsseq::getCoverage(combined_BSseq_filtered, type = 'M'))
+#ef_1 |> filter(Acov==2221)
+#head(bsseq::getCoverage(combined_BSseq_filtered, type = 'Cov'))
 #GenomicRanges::granges(combined_BSseq_filtered)
 
 diff_gr_hypox = diff_methylsig(
@@ -531,68 +487,73 @@ diff_gr_hypox
 diff_df_hypox <- as.tibble(as.data.frame(diff_gr_hypox))
 diff_df_hypox |> inner_join(hypoxia_HeLa, by = dplyr::join_by(seqnames==chr, start==start, end==end))
 ```
-
+Able to reproduce but not all sites! (notice the dimension)
 
 
 
 # MEF-Heatshock 
 ```{r}
-file_paths <- c(
-                paste0(data_path, "GLORI_data/mef_1.cov"), 
-                paste0(data_path, "GLORI_data/mef_2.cov"), 
-                paste0(data_path, "GLORI_data/hs_mef_1.cov"), 
-                paste0(data_path, "GLORI_data/hs_mef_2.cov")) 
+temp <- mef_1 |> select(Chr, Sites, Ratio, Acov, AGcov) |> 
+  inner_join(mef_2 |>  
+               select(Chr, Sites, Ratio, Acov, AGcov), 
+             by = dplyr::join_by(Chr==Chr, Sites==Sites)) |> 
+  inner_join(hs_mef_1 |>
+               select(Chr, Sites, Ratio, Acov, AGcov), 
+             by = dplyr::join_by(Chr==Chr, Sites==Sites)) |> 
+  inner_join(hs_mef_2 |>
+               select(Chr, Sites, Ratio, Acov, AGcov), 
+             by = dplyr::join_by(Chr==Chr, Sites==Sites)) 
 
-colData <- DataFrame(condition = c(
-                                   "untreated", 
-                                   "untreated", 
-                                   "hs", 
-                                   "hs"),
-                     replicate = c(
-                                   1, 
-                                   2, 
-                                   1, 
-                                   2))
-row.names(colData) <- c(
-                        "mef_1",
-                        "mef_2", 
-                        "hs_mef_1",
-                        "hs_mef_2")
-# Ensure colData has the same number of rows as there are files
-if (length(file_paths) != nrow(colData)) {
-    stop("The number of files does not match the number of rows in colData.")
-}
+M <- cbind(temp$Acov.x, temp$Acov.y, temp$Acov.x.x, temp$Acov.y.y)
+Cov <- cbind(temp$AGcov.x, temp$AGcov.y, temp$AGcov.x.x, temp$AGcov.y.y)
+BStmp <- BSseq(chr = temp$Chr, pos = temp$Sites, 
+               M = M, Cov = Cov, sampleNames = c("mef_1","mef_2", "hs_mef_1", "hs_mef_2"))
 
-# Read the files with bsseq::read.bismark
-bsseq_data <- lapply(file_paths, bsseq::read.bismark)
+head(bsseq::getCoverage(BStmp, type = 'M'))
+#mef_1 |> filter(Acov==2221)
+head(bsseq::getCoverage(BStmp, type = 'Cov'))
 
+colData <- DataFrame(condition = c("control","control","hs","hs"),
+                     replicate = c(1, 2, 1, 2))
 
-# Assuming bsseq_data is your list of BSseq objects
-combined_BSseq <- do.call(combine, bsseq_data)
-pData(combined_BSseq) <- colData
+pData(BStmp) <- colData
+pData(BStmp)
+# Require at least two samples from control and two samples from hs
+bsseq_data_filtered = filter_loci_by_group_coverage(
+  bs = BStmp,
+  group_column = 'condition',
+  c('control' = 1, 'hs' = 1))
+# Methylation matrix
+#head(bsseq::getCoverage(combined_BSseq_filtered, type = 'M'))
+#ef_1 |> filter(Acov==2221)
+#head(bsseq::getCoverage(combined_BSseq_filtered, type = 'Cov'))
+#GenomicRanges::granges(combined_BSseq_filtered)
 
+diff_gr_hs = diff_methylsig(
+  bs = bsseq_data_filtered,
+  disp_groups = c('case' = TRUE, 'control' = TRUE),
+  group_column = 'condition',
+  comparison_groups = c('case' = 'hs', 'control' = 'control'),
+  n_cores=3)
 
-combined_BSseq_filtered = filter_loci_by_group_coverage(
-    bs = combined_BSseq,
-    group_column = 'condition',
-    c('untreated' = 2, 'hs' = 2))
+diff_gr_hs
+```
 
-diff_gr_hela = diff_methylsig(
-    bs =
-      #combined_BSseq,
-      combined_BSseq_filtered,
-    disp_groups = c('case' = TRUE, 'control' = TRUE),
-    group_column = 'condition',
-    comparison_groups = c('case' = 'hs', 'control' = 'untreated'),
-    n_cores=3)
-
-diff_gr_hela
+```{r}
+diff_df_hs <- as.tibble(as.data.frame(diff_hdiff_gr_hss_mef))
+# diff_hs_mef |> inner_join(heat_shock_MEF, by = dplyr::join_by(seqnames==chr, start==start, end==end))
+dim(diff_hs_mef)
+diff_hs_mef |> filter(fdr<0.05)
 ```
 
 Results are smaller? 
+Furthermore, if we filter the diff_hs_mef and diff_hs_hypoxia by the meth_diff (>=$\pm$15%) and fdr<0.05, it will be even smaller!
+Therefore, I will go with the original supplementary tables, assuming that the hypoxia and mef were correctly labelled. 
 
 
 
+
+Next, we will look at how the change of methylation level wihtin the stress-induced environment 
 
 # Creating the geneannotation from ENSEMBL
 ```{r}
@@ -643,6 +604,286 @@ human_Tx_ensembl_data <- human_Tx_ensembl_data |>
 rm(temp_info, human_Tx_length_ensembl)
 ```
 
+# NCBI Annotation
+```{r}
+# Get GFF 
+# More advance version p.14
+human_gff_ncbi_path <- 'data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gff'
+human_gff_ncbi_report_path <- 'data/annot_ref/GCF_000001405.40_GRCh38.p14_assembly_report.txt'
+
+# # Load transcripts DB
+human_TxDb_ncbi <- makeTxDbFromGFF(file=human_gff_ncbi_path, format = 'gff3',
+                                   organism = 'Homo sapiens')
+
+# # NOTE: GFF from NCBI doesn't contain straight forward chromosome name
+# # Thus we need to use the report assembly and the seqnames (RefSeq-Accn)
+# # into UCSC-style-name later
+human_gff_ncbi_report <- read.csv(human_gff_ncbi_report_path, comment = '#',
+                                  sep='\t', header = FALSE,
+                                  col.names = c("Sequence-Name","Sequence-Role",
+                                                "Assigned-Molecule",
+                                                "Assigned-Molecule-Location/Type",
+                                                "GenBank-Accn","Relationship",
+                                                "RefSeq-Accn","Assembly-Unit",
+                                                "Sequence-Length","UCSC-style-name")
+                                  )
+# # Rename the seqnames (chr) into UCSC style
+temp_seq_lvl <- data.frame(seqlevels = seqlevels(human_TxDb_ncbi))
+temp_seq_lvl <- temp_seq_lvl |>
+  dplyr::left_join(human_gff_ncbi_report |>
+                     dplyr::select(RefSeq.Accn, UCSC.style.name),
+                   by = dplyr::join_by(seqlevels==RefSeq.Accn)) |>
+  dplyr::pull(UCSC.style.name)
+
+
+# Renaming
+seqlevels(human_TxDb_ncbi) <- temp_seq_lvl
+
+
+# load transcripts GR
+human_Tx_ncbi <- transcripts(human_TxDb_ncbi, columns = c("tx_id", "tx_name", "TXTYPE"))
+# get length of transcripts
+human_Tx_length_ncbi <- transcriptLengths(human_TxDb_ncbi,
+                  with.cds_len=TRUE, with.utr5_len=TRUE, with.utr3_len=TRUE)
+
+# Calculating CDS start/end. Reference: https://support.bioconductor.org/p/9154904/
+cds_start <- start(human_Tx_ncbi) +
+             ifelse(strand(human_Tx_ncbi) == "+", human_Tx_length_ncbi$utr5_len, 
+                    human_Tx_length_ncbi$utr3_len)
+cds_end   <- end(human_Tx_ncbi)   -
+             ifelse(strand(human_Tx_ncbi) == "+", human_Tx_length_ncbi$utr3_len, 
+                    human_Tx_length_ncbi$utr5_len)
+
+no_cds_idx <- which(human_Tx_length_ncbi$cds_len == 0L)
+cds_start[no_cds_idx] <- NA
+cds_end[no_cds_idx]   <- NA
+
+mcols(human_Tx_ncbi)$cds_start <- cds_start
+mcols(human_Tx_ncbi)$cds_end   <- cds_end
+
+human_Tx_ncbi_data <- S4Vectors::merge(human_Tx_length_ncbi, human_Tx_ncbi, 
+                                       by.x = 'tx_id', by.y = 'tx_id', all.x=TRUE)
+
+
+# Filtering the longest transcript (width) only for each gene
+# it still contain numbers of non mRNA gene: i.e. rRNA, tRNA, Mt_RNA, etc.
+human_Tx_ncbi_data <- human_Tx_ncbi_data |> 
+  dplyr::group_by(gene_id) |> 
+  dplyr::filter(width == max(width)) |> 
+  # Since several transcripts could have the same start and end.
+  # need to filter by tx_len (CDS + UTRs)
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() |> 
+  dplyr::select(!c(tx_name.y)) |>
+  dplyr::rename('gene_biotype'='TXTYPE',
+                'tx_name'='tx_name.x', 'chr'='seqnames') |>
+  dplyr::relocate(c('gene_biotype'), .after = c('gene_id')) |>
+  dplyr::relocate(c('tx_name','chr','start','end','width','strand'),
+                  .after = c('gene_biotype'))
+
+AnnotationDbi::select(human_TxDb_ncbi, keys=human_Tx_ncbi_data$tx_name, 
+                      columns='GENEID', keytype = 'TXNAME')
+```
+
+
+
+Next, we join the annotation information with the data that we have.
+```{r}
+# annot <- human_Tx_ensembl_data |>
+#     dplyr::filter(!is.na(gene_name)) |>
+#     dplyr::select(gene_name, gene_biotype, tx_id, chr, start, end) |>
+#     dplyr::mutate(chr = as.character(chr))
+
+# annot <- hela_1 |> 
+#   # Change into ENSEMBL format
+#   dplyr::rowwise() |> 
+#   dplyr::mutate( chr=ifelse(strsplit(as.character(Chr), "chr")[[1]][2] == "M", "MT",
+#                             strsplit(as.character(Chr), "chr")[[1]][2]), 
+#                  start=Sites, end=Sites)
+
+annot <- human_Tx_ncbi_data |>
+  # Change into ENSEMBL format
+  dplyr::rowwise() |>
+  dplyr::mutate( chr=ifelse(strsplit(as.character(chr), "chr")[[1]][2] == "M", "MT",
+                            strsplit(as.character(chr), "chr")[[1]][2])) |>
+  dplyr::select(gene_id, gene_biotype, tx_name, chr, start, end)
+
+annotated_hypoxia_Hela <- fuzzyjoin::genome_join(
+  hypoxia_HeLa |> 
+    # Change into ENSEMBL format
+    dplyr::rowwise() |> 
+    dplyr::mutate( chr=ifelse(strsplit(as.character(chr), "chr")[[1]][2] == "M",
+                              "MT", 
+                              strsplit(as.character(chr), "chr")[[1]][2])),
+  
+    annot,
+  by = c("chr", "start", "end"), 
+  mode = "left"
+)
+
+annotated_heat_shock_MEF <- fuzzyjoin::genome_join(
+  heat_shock_MEF |> 
+    # Change into ENSEMBL format
+    dplyr::rowwise() |> 
+    dplyr::mutate( chr=ifelse(strsplit(as.character(chr), "chr")[[1]][2] == "M",
+                              "MT", 
+                              strsplit(as.character(chr), "chr")[[1]][2])),
+  
+    annot,
+  by = c("chr", "start", "end"), 
+  mode = "left"
+)
+head(annotated_hypoxia_Hela)
+head(annotated_heat_shock_MEF)
+```
+
+```{r}
+#ENSEMBL
+# Hypox related gene
+# Heat Shock related gene
+annotated_hypoxia_Hela |> filter(str_detect(gene_name, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
+                                 gene_biotype=="protein_coding", label!="Unchanged m6A")
+annotated_hypoxia_Hela |> filter(str_detect(gene_name, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
+                                 gene_biotype=="protein_coding", label!="Unchanged m6A")
+
+
+
+annotated_heat_shock_MEF |> filter(str_detect(gene_name, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
+                                 gene_biotype=="protein_coding", label!="Unchanged m6A")
+annotated_heat_shock_MEF |> filter(str_detect(gene_name, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
+                                 gene_biotype=="protein_coding", label!="Unchanged m6A")
+```
+Seems like heatshock regulated gene are dynamics?
+
+
+
+```{r}
+#NCBI
+# Hypox related gene
+# Heat Shock related gene
+
+dynamic_hypo_data_hypo <- annotated_hypoxia_Hela |> filter(str_detect(gene_id, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
+                                 label!="Unchanged m6A")
+dynamic_hs_data_hypo <- annotated_hypoxia_Hela |> filter(str_detect(gene_id, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
+                                 label!="Unchanged m6A")
+
+
+
+dynamic_hypo_data_hs <- annotated_heat_shock_MEF |> filter(str_detect(gene_id, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
+                                 label!="Unchanged m6A")
+dynamic_hs_data_hs <- annotated_heat_shock_MEF |> filter(str_detect(gene_id, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
+                                 label!="Unchanged m6A")
+
+head(dynamic_hypo_data_hypo)
+head(dynamic_hs_data_hypo)
+head(dynamic_hypo_data_hs)
+head(dynamic_hs_data_hs)
+```
+
+What kind of annotation that we need to use?
+- NCBI seems containt more txs but ENSEMBL seems more structured
+
+
+
+```{r}
+#NCBI
+hypo_genes_hypo <- dynamic_hypo_data_hypo |> filter(gene_biotype=="mRNA", label!="Unchanged m6A") |> distinct(gene_id) |> pull()
+hs_genes_hypo <- dynamic_hs_data_hypo |> filter(gene_biotype=="mRNA", label!="Unchanged m6A") |> distinct(gene_id) |> pull()
+
+
+plot_data <- annotated_hypoxia_Hela |> 
+  filter(label!="Unchanged m6A") |> 
+  select(gene_id,  chr.x, start.x, meth_control, meth_case) |>
+  pivot_longer(cols=starts_with('meth_'), names_to='group') |> 
+  rowwise() |> 
+  mutate(group=ifelse(group=='meth_control', 'ctrl','case')) |> 
+  ungroup()
+
+temp_hypo <- plot_data |> 
+  filter(gene_id %in% c(hypo_genes_hypo)) |> 
+  mutate(note = "hypo_genes")
+temp_hs <- plot_data |> 
+  filter(gene_id %in% c(hs_genes_hypo)) |> 
+  mutate(note = "hs_genes")
+
+plot_data <- rbind(temp_hypo, temp_hs)
+
+options(repr.plot.width = 10, repr.plot.height =2) 
+ggplot(plot_data |> filter(note=="hypo_genes"), aes(x= group, y = value, fill=group)) +  
+  geom_jitter(alpha=0.5, width=0.1) +
+  geom_boxplot(width=0.1) +  ggtitle(label = "Distribution of m6A rate of Hypo Genes in Hypoxia Condition") +
+  facet_grid(cols = vars(gene_id), rows = vars(note)) + 
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "bottom") + 
+  guides(fill = FALSE) 
+ggplot(plot_data |> filter(note=="hs_genes"), aes(x= group, y = value, fill=group)) +  
+  geom_jitter(alpha=0.5, width=0.1) +
+  geom_boxplot(width=0.1) +  ggtitle(label = "Distribution of dynamic m6A rate of HS Genes in Hypoxia Condition") +
+  facet_wrap(ncol =4, nrow=4, facets=vars(gene_id)) + 
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  theme_bw() +
+  
+  guides(fill = FALSE) 
+```
+
+
+
+```{r}
+gr_m6A <- GRanges(seqnames=hypoxia_HeLa$chr, 
+                  ranges=IRanges(start=hypoxia_HeLa$start, end=hypoxia_HeLa$end),
+                  m6A_rate=hypoxia_HeLa$meth_diff) 
+
+tr <- transcriptsBy(human_TxDb_ncbi, by = "gene")[["HIF3A"]]
+
+
+# Create a TranscriptTrack
+transcript_track <- TranscriptTrack(
+  transcript,
+  name = "Transcript Structure",
+  showId = TRUE,
+  stacking = "dense"
+)
+
+# Data track for m6A sites
+m6Atrack <- DataTrack(
+  range = gr_m6A,
+  type = "hist",
+  col = "red",
+  col.histogram = "red"
+)
+
+```
+
+
+
+```{r}
+library(Gviz)
+#genome : "hg19" 
+gen<-genome(human_TxDb_ncbi)
+#Chromosme name : "chr7"
+chr <- as.character(seqlevels(human_TxDb_ncbi))
+#Ideogram track
+itrack <- IdeogramTrack(genome = gen, chromosome = "chr2")
+gtrack <- GenomeAxisTrack()
+plotTracks(
+  list(transcriptTrack, m6Atrack, gtrack),
+  from = min(start(gr_m6A)),
+  to = max(end(gr_m6A)),
+  chromosome = as.character(unique(seqnames(gr_m6A)))
+)
+```
+
+```{r}
+# txdb <- loadDb(samplefile)
+txTr <- GeneRegionTrack(human_TxDb_ensembl, chromosome = "chr6", start = 300000, end = 350000)
+#feature(txTr)
+plotTracks(txTr)
+```
+
+
+
 ```{r}
 # Save the guitarTxdb to be loaded later
 save(human_TxDb, file = 'human_GuitarTxdb')
@@ -650,6 +891,8 @@ save(human_TxDb, file = 'human_GuitarTxdb')
 
 
 ```{r}
+human_TxDb <-  makeTxDbFromGFF(file=human_gff_path_ensembl, format = 'gff3',
+                               organism = 'Homo sapiens')
 human_TxDb <-  makeTxDbFromGFF(file=human_gff_path_ensembl, format = 'gff3',
                                organism = 'Homo sapiens')
 human_GuitarTxdb <- Guitar::makeGuitarTxdb(human_TxDb)
@@ -677,7 +920,7 @@ temp_m6A_bed <- overlap_repl_sites |>
 # Writing into bed file 
 m6A_overlap_bed <- GenomicRanges::makeGRangesFromDataFrame(temp_m6A_bed)
 m6A_overlap_bed <- rtracklayer::export(m6A_overlap_bed, format="bed", ignore.strand = FALSE)
-write.table(m6A_overlap_bed, "m6A_overlap.bed", sep="\t", col.names=FALSE,
+write.table(m6A_overlap_bed, "data/m6A_overlap.bed", sep="\t", col.names=FALSE,
             row.names = FALSE, quote = FALSE)
 
 # Overlapping with 
@@ -685,45 +928,45 @@ write.table(m6A_overlap_bed, "m6A_overlap.bed", sep="\t", col.names=FALSE,
 
 
 ```{r}
-  stSampleNum = 10
-mapFilterTranscript = TRUE
-  sitesGroup <- .getStGroup(stBedFiles = "m6A_overlap.bed", stGRangeLists = NULL, 
-                            stGroupName = NULL)
-  GroupNames <- names(sitesGroup)
-  
-  
-  sitesGroupNum <- length(sitesGroup)
-  sitesPointsNormlize <- list()
-  sitesPointsRelative <- list()
-  pointWeight <- list()
-  for (i in seq_len(sitesGroupNum)) {
-    GroupName = GroupNames[[i]]
-    print(paste("sample", stSampleNum, "points for" , GroupName, sep = " "))
-    sitesPoints <- samplePoints(sitesGroup[i], 
-                                stSampleNum = stSampleNum,
-                                stAmblguity = stAmblguity,
-                                pltTxType =  pltTxType, 
-                                stSampleModle = stSampleModle, 
-                                mapFilterTranscript = mapFilterTranscript,
-                                guitarTxdb)
-    
-    for (txType in pltTxType) {
-      sitesPointsNormlize[[txType]][[GroupName]] <- normalize(sitesPoints, guitarTxdb, txType,overlapIndex,siteLengthIndex)
-      sitesPointsRelative[[txType]][[GroupName]] <- sitesPointsNormlize[[txType]][[GroupName]][[1]]
-      pointWeight[[txType]][[GroupName]] <- sitesPointsNormlize[[txType]][[GroupName]][[2]]
-    }
-  }
+
+human_TxDb <- makeTxDbFromGFF(file='data/annot_ref/hg38.knownGene.gtf', format = 'gtf',
+                                   organism = 'Homo sapiens')
 ```
 
 ```{r}
-gcl <- list(human_GuitarTxdb$tx$tx)
-GuitarPlot(txTxdb = human_TxDb,
-stGRangeLists = gcl,
-stSampleNum = 200,
-enableCI = TRUE,
-pltTxType = c("tx"),
-txPrimaryOnly = FALSE
-)
+## UCSC Format
+temp_m6A_bed <- overlap_repl_sites |> 
+  dplyr::mutate(stop = sites) |> 
+  dplyr::rowwise() |> 
+  # Change into ENSEMBL format
+  dplyr::mutate(name = paste0('m6A_',chr,'_',sites),
+                avg_m6a = avg_m6a*100) |> 
+  dplyr::ungroup() |> 
+  #dplyr::arrange(CHR,sites,stop) |> 
+  dplyr::rename(start=sites) |> 
+  dplyr::select(chr, start, stop, name, avg_m6a, strand) 
+
+# Writing into bed file 
+m6A_overlap_bed <- GenomicRanges::makeGRangesFromDataFrame(temp_m6A_bed)
+m6A_overlap_bed <- rtracklayer::export(m6A_overlap_bed, format="bed", ignore.strand = FALSE)
+write.table(m6A_overlap_bed, "data/GLORI_data/m6A_overlap.bed", sep="\t", col.names=FALSE,
+            row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+
+# if Error in reduce(txWithFlank) : argument ".f" is missing, with no default --> unload purrr package. conflict namespace
+GuitarPlot(txGTF = 'data/GLORI_data/inst_extdata_others_hg19_toy.gtf',
+          #mapFilterTranscript=FALSE,
+           stBedFiles = 'data/GLORI_data/m6A_overlap.bed', enableCI=FALSE)
+```
+
+
+```{r}
+GuitarPlot(txGTF = makeTxDbFromUCSC(),
+          #mapFilterTranscript=FALSE,
+           stBedFiles = 'data/GLORI_data/m6A_overlap_ensembl.bed', pltTxType = c("mrna"),
+          enableCI=FALSE)
 ```
 
 
@@ -731,59 +974,21 @@ txPrimaryOnly = FALSE
 ```{r}
 # if Error in reduce(txWithFlank) : argument ".f" is missing, with no default --> unload purrr package. conflict namespace
 GuitarPlot(txTxdb = human_TxDb,
-          #mapFilterTranscript=FALSE,
-           stBedFiles = 'm6A_overlap.bed', enableCI=FALSE)
+          #mapFilterTranscript=FALSE, 
+          adjust=5,
+          stGroupName = c('HEK293T'),
+           stBedFiles = 'data/GLORI_data/m6A_overlap.bed', pltTxType = c("mrna"),
+          enableCI=FALSE)
 ```
-
 ```{r}
-coba <- function(sitesGRanges, guitarTxdb, txType,overlapIndex,siteLengthIndex)
-{ 
-  sitesInformation <- data.frame()
-  
-  sitesPointsPositionNormalize <- list()
-  
-  sitesPointsPosTx<-list()
-  
-  sitesPointsPosTx<-end(sitesGRanges[[txType]])
-  
-  names(sitesPointsPosTx)<-seqnames(sitesGRanges[[txType]])
-  #step 1
-  startPointMat <- guitarTxdb[[txType]]$startPoint[names(sitesPointsPosTx), ]
-  startPointDiffer <- startPointMat - sitesPointsPosTx
-  max_which <- function(x)
-  {
-    max(which(x<0))
-  }
-  component_which <- function(x, Componet_pct, sitesPointsComponet)
-  {
-    sitesPointsComponet_pct <- Componet_pct[x,][sitesPointsComponet[[x]]]
-  }
-  sitesPointsComponet <- apply(startPointDiffer, 1, max_which)
-  # step 2
-  sitesPointsPositionComponet<-startPointDiffer[cbind(seq_along(sitesPointsComponet), sitesPointsComponet)] * -1
-  # step 3
-  sitesPointsComponetMat<-startPointMat[cbind(seq_along(sitesPointsComponet), sitesPointsComponet)]
-  # step 4
-  sitesPointsComponetWidthAvg <- guitarTxdb[[txType]]$componentWidthAverage_pct[sitesPointsComponet]
-  # step 5
-  sitesPointsComponetStart_pct <- guitarTxdb[[txType]]$componentStartAverage_pct[sitesPointsComponet]
-  # step 6
-  componentWidthMat <- guitarTxdb[[txType]]$componentWidth[names(sitesPointsPosTx), ]
-  sitesPointsComponetWidth <- componentWidthMat[cbind(seq_along(sitesPointsComponet), sitesPointsComponet)]
-  # step 7
-  sitesPointsPositionNormalize <- sitesPointsPositionComponet / sitesPointsComponetWidth * sitesPointsComponetWidthAvg + sitesPointsComponetStart_pct
-  names(sitesPointsPositionNormalize) <- sitesGRanges[[txType]]$xHits
-  #step 8 
-  sitesComponet_pct <- guitarTxdb[[txType]]$componentWidthPtc[names(sitesPointsComponet),]
-  sitesPointsComponet_pct <- unlist(lapply( 1:length(sitesPointsComponet), component_which, sitesComponet_pct, sitesPointsComponet))
-  sitesPointsWeight <-  sitesPointsComponetWidthAvg / (sitesGRanges[[txType]]$pointsOverlapTx^overlapIndex )/ sitesPointsComponet_pct * (sitesGRanges[[txType]]$sitesLength ^ siteLengthIndex)
-  names(sitesPointsWeight) <- sitesGRanges[[txType]]$xHits 
-  return(list(sitesPointsPositionNormalize,sitesPointsWeight))
-}
-
-
-coba(m6A_overlap_bed,human_GuitarTxdb, "mRNA", 1, 1)
+GuitarPlot(txTxdb = human_txDb_gencode,
+          #mapFilterTranscript=FALSE, 
+          adjust=5,
+          stGroupName = c('HEK293T'),
+           stBedFiles = 'data/GLORI_data/m6A_overlap.bed', pltTxType = c("mrna"),
+          enableCI=FALSE)
 ```
+
 
 
 
@@ -791,18 +996,19 @@ coba(m6A_overlap_bed,human_GuitarTxdb, "mRNA", 1, 1)
 ```{r}
 # Get GFF 
 # Incorrect chr info for NCBI gff? https://www.biostars.org/p/9552902/
+# More advance version p.14
 human_gff_ncbi_path <- 'data/annot_ref/GCF_000001405.40_GRCh38.p14_genomic.gff'
 human_gff_ncbi_report_path <- 'data/annot_ref/GCF_000001405.40_GRCh38.p14_assembly_report.txt'
 
-# Load transcripts DB
+# # Load transcripts DB
 human_TxDb_ncbi <- makeTxDbFromGFF(file=human_gff_ncbi_path, format = 'gff3',
                                    organism = 'Homo sapiens')
 
-# NOTE: GFF from NCBI doesn't contain straight forward chromosome name
-# Thus we need to use the report assembly and the seqnames (RefSeq-Accn) 
-# into UCSC-style-name later
-human_gff_ncbi_report <- read.csv(human_gff_ncbi_report_path, comment = '#', 
-                                  sep='\t', header = FALSE, 
+# # NOTE: GFF from NCBI doesn't contain straight forward chromosome name
+# # Thus we need to use the report assembly and the seqnames (RefSeq-Accn)
+# # into UCSC-style-name later
+human_gff_ncbi_report <- read.csv(human_gff_ncbi_report_path, comment = '#',
+                                  sep='\t', header = FALSE,
                                   col.names = c("Sequence-Name","Sequence-Role",
                                                 "Assigned-Molecule",
                                                 "Assigned-Molecule-Location/Type",
@@ -810,13 +1016,46 @@ human_gff_ncbi_report <- read.csv(human_gff_ncbi_report_path, comment = '#',
                                                 "RefSeq-Accn","Assembly-Unit",
                                                 "Sequence-Length","UCSC-style-name")
                                   )
-
-# Rename the seqnames (chr) into UCSC style
-temp_seq_lvl <- data.frame(seqlevels = seqlevels((human_TxDb_ncbi)))
-temp_seq_lvl <- temp_seq_lvl |> 
-  dplyr::left_join(human_gff_ncbi_report |> dplyr::select(RefSeq.Accn, UCSC.style.name),
-                   by = dplyr::join_by(seqlevels==RefSeq.Accn)) |> 
+# # Rename the seqnames (chr) into UCSC style
+temp_seq_lvl <- data.frame(seqlevels = seqlevels(human_TxDb_ncbi))
+temp_seq_lvl <- temp_seq_lvl |>
+  dplyr::left_join(human_gff_ncbi_report |>
+                     dplyr::select(RefSeq.Accn, UCSC.style.name),
+                   by = dplyr::join_by(seqlevels==RefSeq.Accn)) |>
   dplyr::pull(UCSC.style.name)
+
+
+# # As in GLORI Paper it used GCF_000001405.39
+# #https://ftp.ncbi.nlm.nih.gov/refseq/H_sapiens/annotation/annotation_releases/109.20211119/GCF_000001405.39_GRCh38.p13/
+# human_gff_ncbi_path <- 'data/p_13/GCF_000001405.39_GRCh38.p13_genomic.gtf'
+# human_gff_ncbi_report_path <- 'data/p_13/GCF_000001405.39_GRCh38.p13_assembly_report.txt'
+# human_TxDb_ncbi <- makeTxDbFromGFF(file=human_gff_ncbi_path, format = 'gtf',
+#                                    organism = 'Homo sapiens')
+# 
+# 
+# # NOTE: GFF from NCBI doesn't contain straight forward chromosome name
+# # Thus we need to use the report assembly and the seqnames (RefSeq-Accn) 
+# # into UCSC-style-name later
+# human_gff_ncbi_report <- read.csv(human_gff_ncbi_report_path, comment = '#', 
+#                                   sep='\t', header = FALSE, 
+#                                   col.names = c("Sequence-Name","Sequence-Role",
+#                                                 "Assigned-Molecule",
+#                                                 "Assigned-Molecule-Location/Type",
+#                                                 "GenBank-Accn","Relationship",
+#                                                 "RefSeq-Accn","Assembly-Unit",
+#                                                 "Sequence-Length","UCSC-style-name")
+#                                   )
+# 
+# # Rename the seqnames (chr) into UCSC style
+# temp_seq_lvl <- data.frame(seqlevels = seqlevels(human_TxDb_ncbi))
+# temp_seq_lvl <- temp_seq_lvl |>  
+#   dplyr::left_join(human_gff_ncbi_report |> 
+#                      dplyr::select(RefSeq.Accn, UCSC.style.name) |> 
+#                      mutate(UCSC.style.name  = ifelse(UCSC.style.name=="na", paste0('NA_',RefSeq.Accn), UCSC.style.name)),
+#                    by = dplyr::join_by(seqlevels==RefSeq.Accn)) |> 
+#   dplyr::pull(UCSC.style.name)
+
+
 # Renaming
 seqlevels(human_TxDb_ncbi) <- temp_seq_lvl
 
@@ -865,14 +1104,14 @@ human_Tx_ncbi_data <- human_Tx_ncbi_data |>
 AnnotationDbi::select(human_TxDb_ncbi, keys=human_Tx_ncbi_data$tx_name, 
                       columns='GENEID', keytype = 'TXNAME')
 
-longest_tx <- list(tx_id = human_Tx_ncbi_data |> dplyr::pull(tx_id))
-longest_mRNA_tx <- list(tx_id = human_Tx_ncbi_data |> 
-                          dplyr::filter(gene_biotype=='mRNA')
-                          dplyr::pull(tx_id)
-
-
-exons(human_TxDb_ncbi,filter=longest_tx, columns=c('exon_id', 'tx_name'))
-
+# longest_tx <- list(tx_id = human_Tx_ncbi_data |> dplyr::pull(tx_id))
+# longest_mRNA_tx <- list(tx_id = human_Tx_ncbi_data |> 
+#                           dplyr::filter(gene_biotype=='mRNA') |> 
+#                           dplyr::pull(tx_id)
+# 
+# 
+# exons(human_TxDb_ncbi,filter=longest_tx, columns=c('exon_id', 'tx_name'))
+# 
 
 
   
@@ -1062,6 +1301,9 @@ human_Tx_ncbi_premRNA_data <- human_Tx_ncbi_data |>
 # Load NCBI mapped sequence
 ```{r}
 # Docs: https://www.bioconductor.org/packages/2.13/bioc/vignettes/Rsamtools/inst/doc/Rsamtools-Overview.pdf
+# Model RefSeq : RNA and protein products that are generated by the eukaryotic genome annotation pipeline. These records use accession prefixes XM_, XR_, and XP_.
+#Known RefSeq : RNA and protein products that are mainly derived from GenBank cDNA and EST data and are supported by the RefSeq eukaryotic curation group. These records use accession prefixes NM_, NR_, and NP_.
+
 
 # Known Refseq accessions prefixed with NM_ and NR_
 human_known_seq_ncbi_path <- 'data/seq_ref/GCF_000001405.40_GRCh38.p14_knownrefseq_alns.bam'
@@ -1069,13 +1311,14 @@ human_known_seq_ncbi_path <- 'data/seq_ref/GCF_000001405.40_GRCh38.p14_knownrefs
 # TODO human_model_seq_ncbi_path
 
 # sam file: qname, flag, rname, pos, ...
-human_known_seq_ncbi <- scanBam(human_known_seq_ncbi_path)
-
-# Showing seqname example 
-# human_known_seq_ncbi[[1]]$rname
+human_known_seq_ncbi <- scanBam(human_known_seq_ncbi_path, nThreads=4)
 
 # Showing tx name 
-human_known_seq_ncbi[[1]]$qname
+intersect_tx <- human_known_seq_ncbi[[1]]$qname
+
+# Only NR and NM for knownrefseq
+cc       <- strsplit(human_known_seq_ncbi[[1]]$qname,'_')
+part1    <- unlist(cc)[2*(1:length(human_known_seq_ncbi[[1]]$qname))-1]
 
 # TODO: Joining sequence data into the annotation data for training and testeing purpose
 ```

@@ -1,2 +1,6 @@
 ~$*
 *.cov
+*.bed
+*.gtf
+*.gff
+*.gff3
