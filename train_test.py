@@ -5,6 +5,7 @@ import logging
 from argparse import ArgumentParser, ArgumentTypeError
 import os
 import csv
+from torchmetrics.functional.regression import pearson_corrcoef
 from datetime import datetime
 
 
@@ -23,37 +24,56 @@ def test(model: torch.nn.Module, test_loader: DataLoader,
     with torch.no_grad():
         model.eval()
         test_loss = 0.0
-        rmse = 0.0
+        se = 0.0
+        ae = 0.0
+        pred = torch.Tensor().to("cpu", non_blocking=True)
+        true = torch.Tensor().to("cpu", non_blocking=True)
         for data in test_loader:
-            seq = data["seq"].to(device)
-            prom_seq = data["prom_seq"].to(device)
-            meth_control = data["meth_control"].to(device)
-            meth_case = data["meth_case"].to(device)
+            seq = data["seq"].to(device, non_blocking=True)
+            meth_case = data["meth_case"].to(device, non_blocking=True)
+
+            meth_pred_response = model(seq)
+            loss = loss_fn(meth_pred_response.squeeze(1), meth_case)
+
+            pred = torch.cat([pred, meth_pred_response.squeeze(1).cpu().detach()])
+            true = torch.cat([true, meth_case.cpu().detach()])
             
-
-            meth_pred_response = model(seq, prom_seq, meth_control)
-
-            loss = loss_fn(meth_pred_response, meth_case)
+            # Total of average loss from each samples in a batch. Huberloss reduction is mean by default
             test_loss += loss.item()
 
             for i in range(len(meth_pred_response)):
                 y_pred = meth_pred_response[i].cpu().detach().numpy()
                 y_true = meth_case[i].cpu().detach().numpy()
+                
+                # squared and abs error
+                se += (y_pred - y_true)**2
+                ae += np.abs(y_pred - y_true)
 
-                rmse += (y_pred - y_true)**2
+        num_samples = len(test_loader.dataset)
+        num_batches = len(test_loader)
 
-        # Total RMSE
-        rmse = np.sqrt(rmse/len(test_loader.dataset)) 
-        test_loss /= len(test_loader.dataset)
-        metrics = {"rmse": rmse}
+        # Average loss per batch in an ecpoh
+        test_loss /= num_batches
 
-        logging.info(f"Test Loss: {test_loss}, RMSE: {rmse}")
+        # Mean squared error and root mean squared error
+        mse =  (se/num_samples).item() 
+        rmse = (np.sqrt(se/num_samples)).item()
+        
+        #logging.info(f"Pred size: {pred.shape}, true size: {true.shape}")
+        # Pearson correlation for all of pred and true 
+        pearson_corr = pearson_corrcoef(pred, true).item()
+        
+        metrics = {"rmse": rmse, 
+                   "mse": mse,
+                   "pearson_corr": pearson_corr,
+                   "pred": pred,
+                   "true": true}
     
     return test_loss, metrics    
 
 def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoader, epochs: int,
           loss_fn: torch.nn.Module, save_dir: str, learning_rate: float=1e-3, 
-          device: str="cpu", optimizer: torch.nn.Module|None=None):
+          device: str="cpu", optimizer: torch.nn.Module|None=None, suffix: str=""):
     """
     Train the Model
 
@@ -71,49 +91,72 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     """
     logging.info(f"==== Start training ====")
     
-    logfile = open(f"{save_dir}/training_{datetime.now().strftime("%Y%m%d_%H%M")}.log", "w")
-    logger = csv.DictWriter(logfile, fieldnames=["epoch", "train_loss", "val_loss", "val_rmse"])
+    logfile = open(f"{save_dir}/training_{suffix}.log", "w+")
+    logger = csv.DictWriter(logfile, fieldnames=["epoch", "train_loss", "val_loss",  "val_rmse", "val_mse", "val_pearson_corr"])
+    logger.writeheader()
 
     if not optimizer:
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    for epoch in epochs:    
+
+    logging.info(f"device {device}")        
+    logging.info(f"Set benchmark to True for CUDNN")
+    torch.backends.cudnn.benchmark = True    
+
+    for epoch in range(1, epochs+1):    
         model.train()
         train_loss = 0.0
         # Iterate in batches
+
+        # logging.info(f"Starting batch")
+            
         for batch, data in enumerate(train_loader):
-            seq = data["seq"].to(device)
-            prom_seq = data["prom_seq"].to(device)
-            meth_case = data["meth_case"].to(device)
-            meth_control = data["meth_control"].to(device)
+            # logging.info(f"Processing batch: {batch}")
+            # logging.info(f"Loading data to device: {device}")
+            seq = data["seq"].to(device, non_blocking=True)
+            meth_case = data["meth_case"].to(device, non_blocking=True)
+            # logging.info(f"Finished loading data to device: {device}")
             
-            optimizer.zero_grad()
-            meth_pred_response = model(seq, prom_seq, meth_control)
-            loss = loss_fn(meth_pred_response, meth_case)
+            optimizer.zero_grad(set_to_none=True)
+
+            # logging.info(f"Start to predict")
+            meth_pred_response = model(seq)
+            # logging.info(f"Finish predict")
+            loss = loss_fn(meth_pred_response.squeeze(1), meth_case)
+
+            # logging.info(f"Start Backprop")
             loss.backward()
+            # logging.info(f"Finish Backprop")
+            # logging.info(f"Start Gradient update")
             optimizer.step()
-            
+            # logging.info(f"Finish Gradient update")
+            # Total of average loss from each samples in a batch. Huberloss reduction is mean by default
             train_loss += loss.item()
+        # Average loss per batch in an epoch
         train_loss /= len(train_loader)
 
-        validation_loss, metrics = test(mode, test_loader, loss_fn, device)
+        validation_loss, metrics = test(model, test_loader, loss_fn, device)
 
-        logging.info(f"Epoch: {epoch}, Train Loss: {train_loss}, Validation Loss: {validation_loss}, Validation RMSE: {metrics['rmse']}")
-        logger.writerow({"epoch": epoch, "train_loss": train_loss, "val_loss": validation_loss, "val_rmse": metrics["rmse"]})
+        logging.info(f"Epoch: {epoch}, train_loss: {train_loss:.7f}, val_loss: {validation_loss:.7f}, val_mse:{metrics['mse']:.7f}, val_rmse: {metrics['rmse']:.7f}, val_pearson_corr: {metrics['pearson_corr']:.7f}")
+        logger.writerow({"epoch": epoch, "train_loss": train_loss, "val_loss": validation_loss, "val_mse": metrics["mse"], 
+                         "val_rmse": metrics["rmse"], "val_pearson_corr": metrics["pearson_corr"]})
     
     logfile.close()
 
+    pred_true = {"pred": metrics["pred"], "true": metrics["true"]}
+
     logging.info(f"==== End training =====")
-    return model
+    return model, pred_true
 
 if __name__=="__main__":
     """
     EXAMPLE USAGE:
     -------
-    python train_test.py --data_folder /Users/faqih/Documents/UCPH/Thesis/code/data/train_test_data --num_epochs 10 --batch_size 100 --save_dir /Users/faqih/Documents/UCPH/Thesis/code/data/outputs --mode train --learning_rate 0.001    
+    python train_test.py --data_folder data/train_test_data --num_epochs 500 --batch_size 256 --save_dir data/outputs --mode train --learning_rate 0.001 --gpu 5 --loader_worker 16 --plot y --suffix naive_v1    
     """
 
     from wrapper.data_setup import SequenceDataset
-    from model import ModelV1
+    from wrapper.utils import plot_loss_function, plot_correlation
+    from model import NaiveModelV1
     import sys
 
     # Set logging template
@@ -129,6 +172,18 @@ if __name__=="__main__":
     parser = ArgumentParser(
         description="Running Training and Testing"
     )
+
+    # Function for parsing boolean from argument
+    def str2bool(v: str) -> bool:
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ('yes', 'true', 't', 'y', '1'):
+            return True
+        elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+            return False
+        else:
+            raise ArgumentTypeError('Boolean value expected.')
+        
     parser.add_argument("-F", "--data_folder", help="Train test Data Folder", required=True)
     parser.add_argument("-E","--num_epochs", help="Number of epochs", required=True)
     parser.add_argument("-B","--batch_size", help="Number of batch size", default=100, type=int)
@@ -136,15 +191,22 @@ if __name__=="__main__":
     parser.add_argument("-M","--mode", help="Training or testing mode",required=True, 
                         choices=["train","test"])
     parser.add_argument("-L","--learning_rate", help="Learning rate", default=0.001, type=float)
+    parser.add_argument('-G', "--gpu", default=[0,1], nargs='+', type=int)
+    parser.add_argument('-W', "--loader_worker", default=0, type=int)
+    parser.add_argument('-P', "--plot", type=str2bool, nargs='?', const=True, default=False, help="Plot loss or not [y/n]")
+    parser.add_argument('-SF', "--suffix", default="", help="Plot loss or not")
+
     args = parser.parse_args()
-
-
     
+    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.gpu)    
     data_folder = args.data_folder
     num_epochs = int(args.num_epochs)
-    batch_size = int(args.batch_size)
+    loader_worker = int(args.loader_worker)
+    batch_size = args.batch_size
     save_dir = args.save_dir
+    suffix = args.suffix
     mode = args.mode
+    plot = args.plot
     learning_rate = args.learning_rate
 
 
@@ -154,7 +216,7 @@ if __name__=="__main__":
 
     if mode=="train":
         logging.info(f"Training mode")
-        for i in range(1, 2): #5-folds SHOULD BE 6
+        for i in range(2, 3): #5-folds SHOULD BE 6
             logging.info(f"Fold-{i}")
             seq_fasta_train_path = f"{data_folder}/motif_fasta_train_SPLIT_{i}.fasta"
             promoter_fasta_train_path = f"{data_folder}/promoter_fasta_train_SPLIT_{i}.fasta"
@@ -166,40 +228,29 @@ if __name__=="__main__":
 
             train_dataset = SequenceDataset(seq_fasta_train_path, promoter_fasta_train_path, label_train_json_path)
             test_dataset = SequenceDataset(seq_fasta_test_path, promoter_fasta_test_path, label_test_json_path)
+       
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=loader_worker)
+            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=loader_worker)
+            logging.info(f"Number of training batches: {len(train_loader)}, Total training sample: {len(train_loader.dataset)}")
+            logging.info(f"Number of test batches: {len(test_loader)}, Total test sample: {len(test_loader.dataset)}")
 
-            print(f"Train Dataset Object: {test_dataset}")
-            print(train_dataset)
-            print(f"Train seq shape: {train_dataset.seq.shape}, type: {type(train_dataset.seq)}")
-            print(train_dataset.seq)
-            print(f"Train label shape: {train_dataset.label.shape}, type: {type(train_dataset.label)}")
-            print(train_dataset.label)
-            print(f"Train prom_seq shape: {train_dataset.prom_seq.shape}, type: {type(train_dataset.prom_seq)}")
-            print(train_dataset.prom_seq)
+            # 0.5MSE if delta<0.1, otherwise delta(|y-y_hat| - 0.5delta)
+            loss_fn = torch.nn.HuberLoss(delta=0.1)
+            # [HARD CODED] Input size here is hard coded for the naive model based on the data
+            # 101 means we have 50 down-up-stream nts
+            model = NaiveModelV1(input_size=101)
+            model.to(device)
+            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+            # Train and Validate the model
+            _, pred_true = train(model, train_loader, test_loader, num_epochs, loss_fn, save_dir, learning_rate, device, optimizer, f"{i}th_fold_{suffix}")
 
-            print(f"Test Dataset Object: {test_dataset}")
-            print(f"Test seq shape: {test_dataset.seq.shape}, type: {type(test_dataset.seq)}")
-            print(test_dataset.seq)
-            print(f"Test label shape: {test_dataset.label.shape}, type: {type(test_dataset.label)}")
-            print(test_dataset.label)
-            print(f"Test prom_seq shape: {test_dataset.prom_seq.shape}, type: {type(test_dataset.prom_seq)}")
-            print(test_dataset.prom_seq)
+            model_file = f"{save_dir}/trained_model_{i}th_fold_{suffix}.pkl"
+            torch.save(model.state_dict(), model_file)
+            logging.info(f"Model of {i}th fold saved to {model_file}")
 
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
-
-            print(f"Train Loader Object {train_loader}")
-            print(f"Test Loader Object {test_loader}")
-
-            # loss_fn = torch.nn.HuberLoss()
-            # optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-            # model = ModelV1()
-            # mode.to(device)
-            # # Train and Validate the model
-            # train(model, train_loader, test_loader, num_epochs, loss_fn, save_dir, learning_rate, device, optimizer)
-
-            # model_file = f'{save_dir}/trained_model_{i}th_fold.pkl'
-            # torch.save(model.state_dict(), model_file)
-            # logging.info(f"Model of {i}th fold saved to {model_file}")
+            if plot:
+                plot_loss_function(f"{save_dir}/training_{i}th_fold_{suffix}.log", f"{save_dir}/analysis", f"loss_plot_{i}th_fold_{suffix}")
+                plot_correlation(pred_true["true"], pred_true["pred"], f"{save_dir}/analysis", f"correlation_plot_{i}th_fold_{suffix}")
             logging.info(f"Finished on Fold-{i}")
     else:
         # TODO: Implement testing mode using the pickled model
