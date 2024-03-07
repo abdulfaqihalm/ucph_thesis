@@ -98,9 +98,10 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     if not optimizer:
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    logging.info(f"device {device}")        
-    logging.info(f"Set benchmark to True for CUDNN")
-    torch.backends.cudnn.benchmark = True    
+    logging.info(f"device {device}")
+    if device.type=="cuda":        
+        logging.info(f"Set benchmark to True for CUDNN")
+        torch.backends.cudnn.benchmark = True    
 
     for epoch in range(1, epochs+1):    
         model.train()
@@ -156,7 +157,7 @@ if __name__=="__main__":
 
     from wrapper.data_setup import SequenceDataset
     from wrapper.utils import plot_loss_function, plot_correlation
-    from model import NaiveModelV1
+    from model import NaiveModelV1, NaiveModelV2
     import sys
 
     # Set logging template
@@ -238,7 +239,7 @@ if __name__=="__main__":
             loss_fn = torch.nn.HuberLoss(delta=0.1)
             # [HARD CODED] Input size here is hard coded for the naive model based on the data
             # 101 means we have 50 down-up-stream nts
-            model = NaiveModelV1(input_size=101)
+            model = NaiveModelV2(input_size=101)
             model.to(device)
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
             # Train and Validate the model
