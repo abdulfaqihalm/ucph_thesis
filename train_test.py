@@ -7,7 +7,7 @@ import os
 import csv
 from torchmetrics.functional.regression import pearson_corrcoef
 from datetime import datetime
-
+from wrapper.utils import EarlyStopper
 
 def test(model: torch.nn.Module, test_loader: DataLoader,
           loss_fn: torch.nn.Module, device: str="cpu") -> tuple[float, dict[str, float]]:
@@ -61,19 +61,19 @@ def test(model: torch.nn.Module, test_loader: DataLoader,
         
         #logging.info(f"Pred size: {pred.shape}, true size: {true.shape}")
         # Pearson correlation for all of pred and true 
+        # x100 for numerical stability
         pearson_corr = pearson_corrcoef(pred, true).item()
-        
         metrics = {"rmse": rmse, 
                    "mse": mse,
                    "pearson_corr": pearson_corr,
-                   "pred": pred,
-                   "true": true}
+                   "pred": pred.numpy(),
+                   "true": true.numpy()}
     
     return test_loss, metrics    
 
 def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoader, epochs: int,
           loss_fn: torch.nn.Module, save_dir: str, learning_rate: float=1e-3, 
-          device: str="cpu", optimizer: torch.nn.Module|None=None, suffix: str=""):
+          device: str="cpu", optimizer: torch.nn.Module|None=None, scheduler: torch.optim.lr_scheduler.LRScheduler|None=None, suffix: str=""):
     """
     Train the Model
 
@@ -91,7 +91,7 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     """
     logging.info(f"==== Start training ====")
     
-    logfile = open(f"{save_dir}/training_{suffix}.log", "w+")
+    logfile = open(f"{save_dir}/logs/training_{suffix}.log", "w+")
     logger = csv.DictWriter(logfile, fieldnames=["epoch", "train_loss", "val_loss",  "val_rmse", "val_mse", "val_pearson_corr"])
     logger.writeheader()
 
@@ -101,8 +101,10 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     logging.info(f"device {device}")
     if device.type=="cuda":        
         logging.info(f"Set benchmark to True for CUDNN")
-        torch.backends.cudnn.benchmark = True    
-
+        torch.backends.cudnn.benchmark = True
+    
+    early_stopper = EarlyStopper(patience=5, min_delta=0.01)    
+    
     for epoch in range(1, epochs+1):    
         model.train()
         train_loss = 0.0
@@ -134,12 +136,19 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
             train_loss += loss.item()
         # Average loss per batch in an epoch
         train_loss /= len(train_loader)
+        # Run scheduler if provided
+        if scheduler:
+            scheduler.step()
 
         validation_loss, metrics = test(model, test_loader, loss_fn, device)
 
         logging.info(f"Epoch: {epoch}, train_loss: {train_loss:.7f}, val_loss: {validation_loss:.7f}, val_mse:{metrics['mse']:.7f}, val_rmse: {metrics['rmse']:.7f}, val_pearson_corr: {metrics['pearson_corr']:.7f}")
         logger.writerow({"epoch": epoch, "train_loss": train_loss, "val_loss": validation_loss, "val_mse": metrics["mse"], 
                          "val_rmse": metrics["rmse"], "val_pearson_corr": metrics["pearson_corr"]})
+        
+        if early_stopper.early_stop(validation_loss):        
+            logging.info(f"Early stop at epoch: {epoch}")     
+            break
     
     logfile.close()
 
@@ -157,7 +166,7 @@ if __name__=="__main__":
 
     from wrapper.data_setup import SequenceDataset
     from wrapper.utils import plot_loss_function, plot_correlation
-    from model import NaiveModelV1, NaiveModelV2
+    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel
     import sys
 
     # Set logging template
@@ -186,7 +195,7 @@ if __name__=="__main__":
             raise ArgumentTypeError('Boolean value expected.')
         
     parser.add_argument("-F", "--data_folder", help="Train test Data Folder", required=True)
-    parser.add_argument("-E","--num_epochs", help="Number of epochs", required=True)
+    parser.add_argument("-E","--num_epochs", help="Max number of epochs", required=True)
     parser.add_argument("-B","--batch_size", help="Number of batch size", default=100, type=int)
     parser.add_argument("-S","--save_dir", help="Directory for saving outputs", required=True)
     parser.add_argument("-M","--mode", help="Training or testing mode",required=True, 
@@ -194,13 +203,18 @@ if __name__=="__main__":
     parser.add_argument("-L","--learning_rate", help="Learning rate", default=0.001, type=float)
     parser.add_argument('-G', "--gpu", default=[0,1], nargs='+', type=int)
     parser.add_argument('-W', "--loader_worker", default=0, type=int)
+    parser.add_argument('-I', "--m6A_info", default='no',const='no', nargs='?', 
+                        choices=['flag_channel', 'level_channel', 'add_middle', 'no'], 
+                        help="Include m6A info? ['flag_channel', 'level_channel', 'add_middle', 'no']")
+    #parser.add_argument('-I', "--m6A_info", type=str2bool, nargs='?', const=True, default=False, help="Include m6A info? [y/n]")
     parser.add_argument('-P', "--plot", type=str2bool, nargs='?', const=True, default=False, help="Plot loss or not [y/n]")
-    parser.add_argument('-SF', "--suffix", default="", help="Plot loss or not")
+    parser.add_argument('-SF', "--suffix", default="", help="Suffix for output files")
 
     args = parser.parse_args()
     
     os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.gpu)    
     data_folder = args.data_folder
+    m6A_info = args.m6A_info
     num_epochs = int(args.num_epochs)
     loader_worker = int(args.loader_worker)
     batch_size = args.batch_size
@@ -217,42 +231,77 @@ if __name__=="__main__":
 
     if mode=="train":
         logging.info(f"Training mode")
-        for i in range(2, 3): #5-folds SHOULD BE 6
+        for i in range(1, 2): #5-folds SHOULD BE 6
             logging.info(f"Fold-{i}")
             seq_fasta_train_path = f"{data_folder}/motif_fasta_train_SPLIT_{i}.fasta"
             promoter_fasta_train_path = f"{data_folder}/promoter_fasta_train_SPLIT_{i}.fasta"
-            label_train_json_path = f"{data_folder}/train_label_SPLIT_{i}.json"
+            # label_train_json_path = f"{data_folder}/train_label_SPLIT_{i}.json"
+            label_train_json_path = f"{data_folder}/train_meta_data_SPLIT_{i}.json"
+            m6A_info_train_path = None
 
             seq_fasta_test_path = f"{data_folder}/motif_fasta_test_SPLIT_{i}.fasta"
             promoter_fasta_test_path = f"{data_folder}/promoter_fasta_test_SPLIT_{i}.fasta"
-            label_test_json_path = f"{data_folder}/test_label_SPLIT_{i}.json"
+            # label_test_json_path = f"{data_folder}/test_label_SPLIT_{i}.json"
+            label_test_json_path = f"{data_folder}/test_meta_data_SPLIT_{i}.json"
+            m6A_info_test_path = None
+            
+            # ['flag_channel', 'level_channel', 'add_middle', 'no']
+            if m6A_info=="level_channel":
+                m6A_info_train_path = f"{data_folder}/train_case_m6A_prob_data_SPLIT_{i}.json"
+                m6A_info_test_path  = f"{data_folder}/test_case_m6A_prob_data_SPLIT_{i}.json"
+            if m6A_info=="flag_channel":
+                m6A_info_train_path = f"{data_folder}/train_case_m6A_flag_data_SPLIT_{i}.json"
+                m6A_info_test_path  = f"{data_folder}/test_case_m6A_flag_data_SPLIT_{i}.json"
 
-            train_dataset = SequenceDataset(seq_fasta_train_path, promoter_fasta_train_path, label_train_json_path)
-            test_dataset = SequenceDataset(seq_fasta_test_path, promoter_fasta_test_path, label_test_json_path)
+            train_dataset = SequenceDataset(seq_fasta_train_path, promoter_fasta_train_path, label_train_json_path, m6A_info_train_path, m6A_info)
+            test_dataset = SequenceDataset(seq_fasta_test_path, promoter_fasta_test_path, label_test_json_path, m6A_info_test_path, m6A_info)
        
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=loader_worker)
-            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=loader_worker)
+            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_worker)
             logging.info(f"Number of training batches: {len(train_loader)}, Total training sample: {len(train_loader.dataset)}")
             logging.info(f"Number of test batches: {len(test_loader)}, Total test sample: {len(test_loader.dataset)}")
 
             # 0.5MSE if delta<0.1, otherwise delta(|y-y_hat| - 0.5delta)
-            loss_fn = torch.nn.HuberLoss(delta=0.1)
+            loss_fn = torch.nn.HuberLoss(delta=1)
             # [HARD CODED] Input size here is hard coded for the naive model based on the data
-            # 101 means we have 50 down-up-stream nts
-            model = NaiveModelV2(input_size=101)
-            model.to(device)
-            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-            # Train and Validate the model
-            _, pred_true = train(model, train_loader, test_loader, num_epochs, loss_fn, save_dir, learning_rate, device, optimizer, f"{i}th_fold_{suffix}")
+            # 1001 means we have 500 down-up-stream nts
+            #model = NaiveModelV2() 
+            #model = MultiRMModel(num_task=1)
 
-            model_file = f"{save_dir}/trained_model_{i}th_fold_{suffix}.pkl"
+
+            if m6A_info: 
+                logging.info(f"Using m6A info")
+                model = NaiveModelV2(input_channel=5, cnn_first_filter=8)
+            else:
+                model = NaiveModelV2(input_channel=4, cnn_first_filter=8)
+
+            model.to(device)
+            #model=torch.nn.DataParallel(model) 
+
+
+
+
+            #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate) # here added the weight dacay
+            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate) # here added the weight dacay
+            #optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, weight_decay=1e-5) # here added the weight dacay for temp_w_l2reg. for temp no.
+            #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=0.1) # here added exponenetial dcay for the optimizer
+            # Train and Validate the model
+            _, pred_true = train(model, train_loader, test_loader, num_epochs, loss_fn, save_dir, learning_rate, device, optimizer, suffix=f"{i}th_fold_{suffix}")
+
+            model_file = f"{save_dir}/models/trained_model_{i}th_fold_{suffix}.pkl"
             torch.save(model.state_dict(), model_file)
             logging.info(f"Model of {i}th fold saved to {model_file}")
 
             if plot:
-                plot_loss_function(f"{save_dir}/training_{i}th_fold_{suffix}.log", f"{save_dir}/analysis", f"loss_plot_{i}th_fold_{suffix}")
+                plot_loss_function(f"{save_dir}/logs/training_{i}th_fold_{suffix}.log", f"{save_dir}/analysis", f"loss_plot_{i}th_fold_{suffix}")
                 plot_correlation(pred_true["true"], pred_true["pred"], f"{save_dir}/analysis", f"correlation_plot_{i}th_fold_{suffix}")
+
+            save_val = True
+            if save_val:
+                with open(f"{save_dir}/validation_{i}th_fold_{suffix}.csv", "w") as f:
+                    writer = csv.writer(f)
+                    writer.writerows(zip(pred_true["true"], pred_true["pred"]))
             logging.info(f"Finished on Fold-{i}")
     else:
         # TODO: Implement testing mode using the pickled model
-        pass
+        logging.info(f"Loading test data ")

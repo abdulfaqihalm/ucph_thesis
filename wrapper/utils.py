@@ -83,14 +83,35 @@ def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str, outp
     # Clear the figure
     plt.clf()
     # Create a jointplot with scatterplot and histograms
-    g = sns.JointGrid(xlim=(0,1), ylim=(0,1))
+    if np.max(y_true) > 1 and np.max(y_pred) > 1:
+        max = 100
+    else:
+        max = 1
+    g = sns.JointGrid(xlim=(0,max), ylim=(0,max))
     sns.scatterplot(x=y_true, y=y_pred, ax=g.ax_joint, s=7, color="xkcd:muted blue")
     sns.histplot(x=y_true, color="xkcd:muted blue", ax=g.ax_marg_x)
     sns.histplot(y=y_pred, color="xkcd:muted blue",  ax=g.ax_marg_y)
     #sns.regplot(x=y_true, y=y_pred, scatter=False, ax=g.ax_joint, line_kws={"color":"xkcd:bluey grey"})
-    g.ax_joint.plot([0, 1], [0, 1], 'k--')
+    g.ax_joint.plot([0, max], [0, max], 'k--')
     g.set_axis_labels('True Val', 'Pred Val')
     g.savefig(f"{output_path}/{output_name}.png")
+
+class EarlyStopper:
+    def __init__(self, patience:int = 5, min_delta:float = 0.05) -> None:
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.min_validation_loss = float('inf')
+
+    def early_stop(self, validation_loss:float) ->bool:
+        if validation_loss < self.min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (self.min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
 
 
 
@@ -106,5 +127,6 @@ if __name__=="__main__":
     # result = create_seq_tensor(path_to_fasta)
     # print(result.shape)
     # print(result)
-
-    plot_correlation(np.random.rand(100), np.random.rand(100), "data/outputs/analysis", "test_correlation")
+    out = pd.read_csv("data/outputs/validation_1th_fold_temp_tanh.csv")
+    plot_correlation(out.iloc[:,0], out.iloc[:,1], "data/outputs/analysis", "test_correlation")
+    #plot_loss_function("data/outputs/logs/training_1th_fold_temp_tanh.log", "data/outputs/analysis", "TEST")

@@ -1,3 +1,7 @@
 *.fasta
 *.json
 *.bed
+*.gz
+*.txt
+train_test*
+outputs
