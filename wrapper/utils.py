@@ -6,6 +6,7 @@ import pandas as pd
 import seaborn as sns
 import random
 import os
+from scipy.stats import gaussian_kde
 
 def one_hot(seq: str) -> np.ndarray:
     """
@@ -83,19 +84,30 @@ def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str, outp
 
     # Clear the figure
     plt.clf()
-    # Create a jointplot with scatterplot and histograms
     if np.max(y_true) > 1 and np.max(y_pred) > 1:
         max = 100
     else:
         max = 1
+
+    # Calculate the point density
+    xy = np.vstack([y_true, y_pred])
+    z = gaussian_kde(xy)(xy)
+    corr_coef = np.corrcoef(y_true, y_pred)[0, 1]
+    color_palette = "rocket"
+    palette = iter(sns.color_palette(color_palette, 5))
+    hist_color = next(palette)
+
+    plt.figure()
+
     g = sns.JointGrid(xlim=(0,max), ylim=(0,max))
-    sns.scatterplot(x=y_true, y=y_pred, ax=g.ax_joint, s=7, color="xkcd:muted blue")
-    sns.histplot(x=y_true, color="xkcd:muted blue", ax=g.ax_marg_x)
-    sns.histplot(y=y_pred, color="xkcd:muted blue",  ax=g.ax_marg_y)
-    #sns.regplot(x=y_true, y=y_pred, scatter=False, ax=g.ax_joint, line_kws={"color":"xkcd:bluey grey"})
-    g.ax_joint.plot([0, max], [0, max], 'k--')
-    g.set_axis_labels('True Val', 'Pred Val')
+    sns.scatterplot(x=y_true, y=y_pred, hue=z, s=8, ax=g.ax_joint, palette=color_palette, edgecolor='none', legend=False, alpha=0.5)
+    sns.histplot(x=y_true, color=hist_color, edgecolor='none', ax=g.ax_marg_x)
+    sns.histplot(y=y_pred, color=hist_color, edgecolor='none', ax=g.ax_marg_y)
+    plt.text(80, 5, f'r = {corr_coef:.2f}', fontsize=12)
+    g.set_axis_labels('True Val', 'Pred Val', fontsize=12)
+    g.ax_joint.plot([0, max], [0, max], color='black', linestyle='--')
     g.savefig(f"{output_path}/{output_name}.png")
+
 
 class EarlyStopper:
     def __init__(self, patience:int = 5, min_delta:float = 0.05) -> None:
@@ -142,6 +154,6 @@ if __name__=="__main__":
     # result = create_seq_tensor(path_to_fasta)
     # print(result.shape)
     # print(result)
-    out = pd.read_csv("data/outputs/validation_1th_fold_temp_tanh.csv")
+    out = pd.read_csv("/binf-isilon/renniegrp/vpx267/ucph_thesis/data/outputs/validation_1th_fold_case_m6_info-no_promoter-False_single_model_TEST_BEST_PARAM.csv")
     plot_correlation(out.iloc[:,0], out.iloc[:,1], "data/outputs/analysis", "test_correlation")
     #plot_loss_function("data/outputs/logs/training_1th_fold_temp_tanh.log", "data/outputs/analysis", "TEST")
