@@ -1,6 +1,7 @@
 import torch
 from torch import nn 
 import numpy as np 
+import pickle
 
 class BahdanauAttention(nn.Module):
     """
@@ -25,23 +26,6 @@ class BahdanauAttention(nn.Module):
         context_vector = torch.transpose(context_vector,1,2)
         return context_vector, attention_weights
 
-class EmbeddingHmm(nn.Module):
-    def __init__(self,t,out_dims):
-        """
-        Inputs:
-            length: the length of input sequence
-            t: the hyperparameters used for parallel message update iterations
-            out_dims: dimension of new embedding
-        """
-        super(EmbeddingHmm,self).__init__()
-
-        self.T = t
-        self.out_dims = out_dims
-        self.W1 = nn.Linear(4,out_dims)
-        self.W2 = nn.Linear(out_dims,out_dims)
-        self.W3 = nn.Linear(4,out_dims)
-        self.W4 = nn.Linear(out_dims,out_dims)
-        self.relu = nn.ReLU()
 
     def forward(self,x):
         """
@@ -61,3 +45,31 @@ class EmbeddingHmm(nn.Module):
         for i in range(1,length+1):
             miu[:,i-1,:]= self.relu(self.W3(x[:,:,i-1].clone())+self.W4(V[:,self.T,i-1,i].clone())+self.W4(V[:,self.T,i+1,i].clone()))
         return miu
+
+class EmbeddingSeq(nn.Module):
+    def __init__(self,weight_dict_path):
+        """
+        Inputs:
+            weight_dict_path: path of pre-trained embeddings of RNA/dictionary
+        """
+        super(EmbeddingSeq,self).__init__()
+        weight_dict = pickle.load(open(weight_dict_path,'rb'))
+
+        weights = torch.FloatTensor(list(weight_dict.values())).cuda()
+        num_embeddings = len(list(weight_dict.keys()))
+        embedding_dim = 300
+
+        self.embedding = nn.Embedding(num_embeddings=num_embeddings,embedding_dim=embedding_dim)
+        self.embedding.weight = nn.Parameter(weights)
+        self.embedding.weight.requires_grad = False
+
+    def forward(self,x):
+
+        out = self.embedding(x.type(torch.cuda.LongTensor))
+
+        return out
+
+if __name__ == "__main__":
+    embd = EmbeddingSeq('/binf-isilon/renniegrp/vpx267/ucph_thesis/data/embeddings/MultiRM/Embeddings/embeddings_12RM.pkl')
+    coba = embd("GGGCCGTGGATACCTGCCTTTTAATTCTTTTTTATTCGCCCATCGGGGCCGCGGATACCTGCTTTTTATTTTTTTTTCCTTAGCCCATCGGGGTATCGGATACCTGCTGATTCCCTTCCCCTCTGAACCCCCAACACTCTGGCCCATCGGGGTGACGGATATCTGCTTTTTAAAAATTTTCTTTTTTTGGCCCATCGGG")
+    print(coba)

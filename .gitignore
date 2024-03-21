@@ -1,4 +1,7 @@
 foo/
+foo.*
+ray_results/
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

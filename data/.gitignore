@@ -4,4 +4,9 @@
 *.gz
 *.txt
 train_test*
+single_model/
+double_outputs/
+dual_outputs/
+embeddings/ 
+
 outputs

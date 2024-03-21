@@ -16,6 +16,8 @@ library(biomaRt)
 library(fuzzyjoin)
 library(ggpubr) 
 library(ggrepel)
+library(ggplot2)
+library(ggvenn)
 library(latex2exp)
 # GFF/GTF related libs
 library(rtracklayer) # Interacting with UCSC genome browser
@@ -123,7 +125,6 @@ NOTE!!!: We can see there is a difference between the data provided and the GLOR
 
 # Counting m6A for each chromosomes 
 ```{r}
-library(ggplot2)
 ## For plots or analysis
 chr_order <- c('chr1','chr2','chr3','chr4','chr5','chr6','chr7',
                             'chr8','chr9','chr10','chr11','chr12','chr13','chr14',
@@ -395,6 +396,31 @@ hypox_hela_2 <- read.csv(paste0(GRE_folder,'GSM6432599_hypoxia-2_35bp_m2.totalm6
 hs_mef_1 <- read.csv(paste0(GRE_folder,'GSM6432604_HS-1_35bp_m2.totalm6A.FDR.csv.gz'), sep = '\t')
 hs_mef_2 <- read.csv(paste0(GRE_folder,'GSM6432605_HS-2_35bp_m2.totalm6A.FDR.csv.gz'), sep = '\t')
 
+hela_raw_intrsct <- hela_1 |> 
+  dplyr::inner_join(hela_2, by=c("Chr", "Sites")) |> 
+  dplyr::rename(Strand=Strand.x, Gene=Gene.x, Transcript=Transcript.x) |> 
+  dplyr::select(Chr, Sites, Strand, Gene, Transcript, Ratio.x, Ratio.y) |> 
+  rowwise() |> 
+  mutate(meth_ctrl_mean = mean(c_across(c('Ratio.x', 'Ratio.y')), na.rm=TRUE)) |> 
+  ungroup() |> 
+  dplyr::select(!c(Ratio.x, Ratio.y))
+hela_raw_hypoxia_intrsct <-  hypox_hela_1 |> 
+  dplyr::inner_join(hypox_hela_2, by=c("Chr", "Sites")) |> 
+  dplyr::rename(Strand=Strand.x, Gene=Gene.x, Transcript=Transcript.x)|> 
+  dplyr::select(Chr, Sites, Strand, Gene, Transcript, Ratio.x, Ratio.y) |> 
+  rowwise() |> 
+  mutate(meth_case_mean = mean(c_across(c('Ratio.x', 'Ratio.y')), na.rm=TRUE)) |> 
+  ungroup() |> 
+  dplyr::select(!c(Ratio.x, Ratio.y))
+
+hela_hypoxia_intrsct <- hela_raw_intrsct |> 
+  dplyr::full_join(hela_raw_hypoxia_intrsct, by=c("Chr", "Sites")) |> 
+  dplyr::mutate(Strand = ifelse(is.na(Strand.x),Strand.y,Strand.x),
+                meth_control = ifelse(is.na(meth_ctrl_mean), 0, meth_ctrl_mean),
+                meth_case = ifelse(is.na(meth_case_mean), 0, meth_case_mean)) |> 
+  dplyr::select(c(Chr, Sites, Strand, meth_case, meth_control))
+  
+
 #NOTES:
 #   hypox_hela_2 |>  inner_join(heat_shock_MEF, by = dplyr::join_by(Chr==chr, Sites==start)) RETURNING SMALL NUMBER OF SITES (4)
 #   hypox_hela_2 |>  inner_join(hypoxia_HeLa, by = dplyr::join_by(Chr==chr, Sites==start)) RETURNING >80K sites. THUS HYPOXIA_HELA IS INDEED HYPOXIA IN THE DATA? 
@@ -414,6 +440,246 @@ print(dim(hela_2))
 print(dim(hypox_hela_1))
 print(dim(hypox_hela_2))
 ```
+
+```{r}
+venn_hel_data <- list(
+  control_1 = paste0(hela_1$Chr,"_",hela_1$Sites),
+  control_2 = paste0(hela_2$Chr,"_", hela_2$Sites),
+  hypoxia_1 = paste0(hypox_hela_1$Chr,"_", hypox_hela_1$Sites),
+  hypoxia_2 = paste0(hypox_hela_2$Chr,"_", hypox_hela_2$Sites)
+)
+
+ggvenn::ggvenn(
+  venn_hel_data, 
+  fill_color = c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4
+  )
+
+
+```
+
+```{r}
+
+venn_hel_data <- list(
+  hypoxia_1 = paste0(hypox_hela_1$Chr,"_", hypox_hela_1$Sites),
+  hypoxia_2 = paste0(hypox_hela_2$Chr,"_", hypox_hela_2$Sites)
+)
+
+ggvenn::ggvenn(
+  venn_hel_data, 
+  fill_color = c("#0073C2FF", "#EFC000FF"),
+  stroke_size = 0.5, set_name_size = 4, auto_scale = TRUE
+  )
+```
+```{r}
+venn_hel_data <- list(
+  control_1 = paste0(hela_1$Chr,"_",hela_1$Sites),
+  control_2 = paste0(hela_2$Chr,"_", hela_2$Sites)
+)
+
+ggvenn::ggvenn(
+  venn_hel_data, 
+  fill_color = c("#868686FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4, auto_scale = TRUE
+  )
+```
+
+
+
+```{r}
+ggplot() +
+  geom_histogram(data = hypox_hela_1, aes(x=Ratio), fill = "red", alpha=0.2
+                 ) +
+  geom_histogram(data = hypox_hela_2, aes(x=Ratio), fill = "blue", alpha=0.2
+                 ) +
+  geom_histogram(data = hela_1, aes(x=Ratio), fill = "orange", alpha=0.2
+                 ) +
+  geom_histogram(data = hela_2, aes(x=Ratio), fill = "green", alpha=0.2
+                 ) +
+  theme_bw()
+```
+
+
+
+```{r}
+venn_hel_intrsct_data <- list(
+  control_raw_intersect =  base::intersect(venn_hel_data$control_1, venn_hel_data$control_2),
+  hypoxia_raw_intersect = base::intersect(venn_hel_data$hypoxia_1, venn_hel_data$hypoxia_2)
+)
+ggvenn::ggvenn(
+  venn_hel_intrsct_data, 
+  fill_color = c("#0073C2FF","#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4, auto_scale = TRUE
+  )
+```
+
+Analysis what kind of gene which is has zero on control or zero in hypoxia and the intersect 
+```{r}
+human_txDb <- makeTxDbFromGFF(paste0(DATA_FOLDER, 'annot_ref/gencode.v45.annotation.gtf'))
+# Get from rtracklayer to extract metadata
+gtf <- rtracklayer::import.gff(con=paste0(DATA_FOLDER, 'annot_ref/gencode.v45.annotation.gtf'), 
+                               format="gtf", genome="GRCh38.p14")
+
+metadata <- as.tibble(elementMetadata(gtf)[ , c("gene_id", "gene_name", 
+                                                "gene_type", "transcript_id", 
+                                                "transcript_name")])
+metadata <- na.omit(metadata)
+metadata <- metadata[!duplicated(metadata), ]
+
+# Tx
+human_Tx <- transcripts(human_txDb)
+# Transcript length summary
+human_Tx_length <- transcriptLengths(human_txDb,
+                                     with.cds_len=TRUE, with.utr5_len=TRUE, with.utr3_len=TRUE)
+
+
+human_Tx_data <- S4Vectors::merge(human_Tx, metadata, 
+                                  by.x = 'tx_name', by.y = 'transcript_id', all.x=TRUE)
+human_Tx_data <- S4Vectors::merge(human_Tx_data, human_Tx_length |> 
+                                    dplyr::select(tx_name, nexon, tx_len,cds_len, utr5_len, utr3_len), 
+                                  by.x = 'tx_name', by.y = 'tx_name', all.x=TRUE)
+
+# Filtering the longest transcript (width) only for each gene
+# it still contain numbers of non mRNA gene: i.e. rRNA, tRNA, Mt_RNA, etc.
+human_Tx_data_longest <- human_Tx_data |> 
+  dplyr::group_by(gene_id) |> 
+  dplyr::filter(width == max(width)) |> 
+  # Since several transcripts could have the same start and end.
+  # need to filter by tx_len (CDS + UTRs)
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() |> 
+  # STILL CONTAIN DUPLICATE. CHECK: human_Tx_data_longest |>  dplyr::inner_join(human_Tx_data_longest |> dplyr::select(gene_name, gene_type) |> group_by(gene_name) |> dplyr::summarise(count = dplyr::n()) |> dplyr::filter(count>1), by=c("gene_name")) |> arrange(gene_name,tx_id)
+  # Thus add filter below
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(gene_id == max(gene_id)) |> 
+  dplyr::ungroup() |> 
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(cds_len == max(cds_len)) |> 
+  dplyr::ungroup() |> 
+  # Arbitary filter by tx_name since they already have the save width, cds len
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(tx_name == max(tx_name)) |> 
+  dplyr::ungroup() |> 
+  dplyr::select(!c(tx_id)) |> 
+  dplyr::rename('tx_name'='transcript_name', 'tx_id'='tx_name') |> 
+  dplyr::relocate(c('tx_id','tx_name','nexon','tx_len'), 
+                  .after = c('strand'))
+# FILTERINGMISC, VAULT, TO BE CONFIRMED (TEC), ANTIBODY GENES 
+#human_Tx_data_longest |> dplyr::filter(!grepl('vault|TEC|artifact', gene_type)) |> dplyr::distinct(gene_type)
+```
+
+
+
+```{r}
+hela_union <- hela_raw_intrsct |> 
+  dplyr::full_join(hela_raw_hypoxia_intrsct, by=c("Chr", "Sites"), suffix=c(".control", ".hypoxia")) |> 
+  dplyr::mutate(Gene = ifelse(is.na(Gene.control), Gene.hypoxia, Gene.control),
+                flag = case_when(is.na(Gene.control) ~ "Hypoxia Only",
+                                 is.na(Gene.hypoxia) ~ "Control Only",
+                                 .default = "Both")) |> 
+  dplyr::left_join(human_Tx_data_longest |> dplyr::select(gene_name, gene_type, tx_id, width),
+                                                                   by=dplyr::join_by(Gene==gene_name)) 
+
+# We want to try to reannotated "ELSE" so that it might be useful for us
+temp <- (hela_union |> dplyr::filter(Gene=="ELSE") |> dplyr::select(!c(gene_type, tx_id, width))) |> 
+  dplyr::left_join(human_Tx_data_longest |> 
+                     dplyr::filter(!grepl('vault|TEC|artifact', gene_type)) |> 
+                     dplyr::select(seqnames, start, end, gene_name, gene_type, tx_id, width),
+                   by=dplyr::join_by(Chr==seqnames, Sites>=start, Sites<=end)) |> 
+  dplyr::select(!c(start,end)) |> group_by(Chr, Sites) |> 
+    summarise(
+        gene_name = paste(gene_name, sep = ";", collapse = "|"),
+        gene_type = paste(gene_type, sep = ";", collapse = "|"),
+        tx_id = paste(tx_id, sep = ";", collapse = "|"),
+        width = paste(width, sep = ";", collapse = "|")
+    )
+
+# Overlapped sites with more than one gene separated by |
+# There are 4k "ELSE" sites overlap with several genes 
+hela_union_else_annotated <- (hela_union |> dplyr::filter(Gene=="ELSE") |> dplyr::select(!c(gene_type, tx_id, width))) |> 
+  dplyr::left_join(temp, by=c("Chr", "Sites")) |> dplyr::mutate(Gene = ifelse(gene_name=="NA", "ELSE", gene_name), gene_type = dplyr::na_if(gene_type, "NA"), tx_id = dplyr::na_if(tx_id, "NA"), width = dplyr::na_if(width, "NA")) |> dplyr::select(!(gene_name)) |> dplyr::mutate(width = as.integer(width))
+
+hela_union <- hela_union |> dplyr::filter(Gene!="ELSE") |> bind_rows(hela_union_else_annotated)
+```
+
+```{r}
+hela_union |> count(flag)
+
+# First report what kind of sites we dont' annotated "ELSE"
+hela_union |> dplyr::filter(Gene=="ELSE") |> 
+  group_by(Chr) |> count(flag) |> arrange(desc(n))
+# We can see that many of "ELSE" comes from the control only and comes from Chr1 and Chr2\
+# One example of the region from Control only is chr1:23559529 1k in promoter 
+```
+
+
+```{r}
+# Now we wnat to see what kind of genes are in control only
+hela_union |> dplyr::filter(flag=="Control Only") |> count(gene_type) |> arrange(desc(n))
+hela_union |> dplyr::filter(flag=="Hypoxia Only") |> count(gene_type) |> arrange(desc(n))
+
+
+# Now we wnat to see what kind of genes are in hypoxia only
+#hela_union |> dplyr::filter(flag=="Hypoxia Only") |> distinct(Gene, gene_type)
+# Here is the list of the genes which related into the hypoxia response
+# We can see that VEGFA sites are mostly detected on hypoxia condition only 
+# However, most of the sites are there both in control and hypoxia
+hela_union |>dplyr::filter(grepl("HIF|IRS3|VEGFA|EGLN", Gene)) |> group_by(Gene) |> count(flag)
+```
+
+# TODO: HOW TO SUMMARISE THOSE MANY GENES ON THE SITES? 
+
+
+
+
+
+```{r}
+venn_hel_intrsct_supp_data <- list(
+  supplementary_hypoxia = paste0(hypoxia_HeLa$chr, "_", hypoxia_HeLa$start),
+  control_raw_intersect =  base::intersect(venn_hel_data$control_1, venn_hel_data$control_2),
+  hypoxia_raw_intersect = base::intersect(venn_hel_data$hypoxia_1, venn_hel_data$hypoxia_2)
+)
+ggvenn(
+  venn_hel_intrsct_supp_data, 
+  fill_color = c("#0073C2FF","#CD534CFF", "#EFC000FF"),
+  stroke_size = 0.5, set_name_size = 4
+  )
+```
+```{r}
+library(venneuler) 
+vd <- venneuler(c(A=0.3, B=0.3, C=1.1, "A&B"=0.1, "A&C"=0.2, "B&C"=0.1 ,"A&B&C"=0.1))
+plot(vd)
+# same as c(A=1, `A&B&C`=1, C=1)
+m <- data.frame(elements=c("1","2","2","2","3"), sets=c("A","A","B","C","C"))
+v <- venneuler(m)
+plot(v)
+m <- as.matrix(data.frame(A=c(1.5, 0.2, 0.4, 0, 0),
+                          B=c(0  , 0.2, 0  , 1, 0),
+                          C=c(0  , 0  , 0.3, 0, 1)))
+# without weights
+v <- venneuler(m > 0)
+plot(v)
+# with weights
+v <- venneuler(m)
+plot(v)
+```
+```{r}
+library(eulerr)
+
+vd <- euler(c(A=10, B=6, "A&B"=6))
+
+plot(vd)
+```
+```{r}
+library(BioVenn)
+biovenn <- draw.venn(
+  paste0(hypoxia_HeLa$chr, "_", hypoxia_HeLa$start),
+  base::intersect(venn_hel_data$control_1, venn_hel_data$control_2),
+  base::intersect(venn_hel_data$hypoxia_1, venn_hel_data$hypoxia_2),subtitle="coba", nrtype="pct")
+```
+
+
+
 
 # Hela-Hypoxia
 ```{r}
@@ -438,15 +704,15 @@ library(bsseq)
 # a (matrix) of M (Methylation) values, describing the number of read supporting methylation covering a single loci. Each row in this matrix is a methylation loci and each column is a sample.
 # a (matrix) of Cov (Coverage) values, describing the total number of reads covering a single loci. Each row in this matrix is a methylation loci and each column is a sample.
 
-temp <- hela_1 |> select(Chr, Sites, Ratio, Acov, AGcov) |> 
+temp <- hela_1 |> dplyr::select(Chr, Sites, Ratio, Acov, AGcov) |> 
   inner_join(hela_2 |>  
-               select(Chr, Sites, Ratio, Acov, AGcov), 
+               dplyr::select(Chr, Sites, Ratio, Acov, AGcov), 
              by = dplyr::join_by(Chr==Chr, Sites==Sites)) |> 
   inner_join(hypox_hela_1 |>
-               select(Chr, Sites, Ratio, Acov, AGcov), 
+               dplyr::select(Chr, Sites, Ratio, Acov, AGcov), 
              by = dplyr::join_by(Chr==Chr, Sites==Sites)) |> 
   inner_join(hypox_hela_2 |>
-               select(Chr, Sites, Ratio, Acov, AGcov), 
+               dplyr::select(Chr, Sites, Ratio, Acov, AGcov), 
              by = dplyr::join_by(Chr==Chr, Sites==Sites)) 
 
 M <- cbind(temp$Acov.x, temp$Acov.y, temp$Acov.x.x, temp$Acov.y.y)
@@ -485,9 +751,27 @@ diff_gr_hypox
 ```
 ```{r}
 diff_df_hypox <- as.tibble(as.data.frame(diff_gr_hypox))
-diff_df_hypox |> inner_join(hypoxia_HeLa, by = dplyr::join_by(seqnames==chr, start==start, end==end))
+diff_df_hypox |> dplyr::inner_join(hypoxia_HeLa, by = dplyr::join_by(seqnames==seqnames, start==start, end==end))
 ```
 Able to reproduce but not all sites! (notice the dimension)
+
+```{r}
+ggvenn(
+  list(
+    supplementary_hypoxia = paste0(hypoxia_HeLa$seqnames, hypoxia_HeLa$start),
+    methylsig_hypoxia =  paste0(diff_df_hypox$seqnames, diff_df_hypox$start)
+    ), 
+  fill_color = c("#0073C2FF","#CD534CFF", "#EFC000FF"),
+  stroke_size = 0.5, set_name_size = 4
+  )
+```
+
+
+```{r}
+ggplot(data=hypoxia_HeLa) +
+  
+```
+
 
 
 

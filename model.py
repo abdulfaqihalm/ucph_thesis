@@ -1,7 +1,8 @@
 from torch import nn
 import torch
 import numpy as np
-from wrapper.model_utils import BahdanauAttention, EmbeddingHmm
+from wrapper.model_utils import BahdanauAttention, EmbeddingSeq
+import math
 
 class NaiveModelV1(nn.Module):
     ## Naive model from MultiRM Paper by Song et al.
@@ -49,12 +50,10 @@ class NaiveModelV1(nn.Module):
 
 class NaiveModelV2(nn.Module):
     ## CNN + LSTM
-    def __init__(self, input_channel=None, cnn_first_filter=8) -> None:
+    def __init__(self, input_channel=None, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=7, output_dim=1) -> None:
         super().__init__()
-        # HARD CODED 1001 
-        self.input_size=1001
         self.NaiveCNN = nn.Sequential(
-            nn.Conv1d(in_channels=input_channel,out_channels=cnn_first_filter,kernel_size=7,stride=2,padding=0), #[bs, 8, 498]
+            nn.Conv1d(in_channels=input_channel,out_channels=cnn_first_filter,kernel_size=cnn_first_kernel_size,stride=2,padding=0), #[bs, 8, 498]
             nn.BatchNorm1d(num_features=8),
             nn.ReLU(),
             nn.Dropout(p=0.2),
@@ -68,9 +67,13 @@ class NaiveModelV2(nn.Module):
             nn.ReLU(),
              #nn.MaxPool1d(kernel_size=2,padding=0)
             )
-        self.biiLSTM = nn.LSTM(input_size=128,hidden_size=128,batch_first=True,bidirectional=True, num_layers=3)
+        in_size = ((input_size - (1 * (cnn_first_kernel_size - 1 )) - 1)/2) + 1
+        in_size = ((in_size + (2*1) - (1 * (3 - 1 )) - 1)/1) + 1
+        in_size = in_size/2
+        in_size = int(((in_size + (2*1) - (1 * (3 - 1 )) - 1)/1) + 1)
+        self.biLSTM = nn.LSTM(input_size=128,hidden_size=128,batch_first=True,bidirectional=True, num_layers=3)
         self.Flatten = nn.Flatten() # 128*12*2 -> biLSTM
-        self.FC1= nn.Sequential(nn.Linear(in_features=2*128*249,out_features=1024),
+        self.FC1= nn.Sequential(nn.Linear(in_features=2*128*in_size,out_features=1024),
                                 nn.ReLU(),
                                 nn.Dropout(p=0.2),
                                 nn.Linear(in_features=1024,out_features=512),
@@ -83,7 +86,7 @@ class NaiveModelV2(nn.Module):
                                 nn.Linear(in_features=256,out_features=64),
                                 nn.ReLU(),
                                 nn.Dropout(p=0.2),
-                                nn.Linear(in_features=64,out_features=1),
+                                nn.Linear(in_features=64,out_features=output_dim),
                                 nn.Hardtanh(0, 1)
                                 )
 
@@ -92,12 +95,158 @@ class NaiveModelV2(nn.Module):
     def forward(self, x) -> None:
         out = self.NaiveCNN(x)
         out = out.permute(0, 2, 1) #[bs 12 128]
-        out, h = self.biiLSTM(out)
+        out, h = self.biLSTM(out)
         out = self.Flatten(out) # flatten output
         out = self.FC1(out)
         out = self.FC2(out)
         out = out*100
         return out
+    
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model=4, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:x.size(0), :]
+        return self.dropout(x)
+
+class ConvTransformerModel(nn.Module):
+    def __init__(self, seq_size=1001, input_channel=4, dropout_rate=0.2, l2_param=0.001, conv_win=6, num_heads=4, transformer_units=[32, 16]):
+        super(ConvTransformerModel, self).__init__()
+
+        # Convolutional layers
+        self.conv_layers = nn.Sequential(
+            nn.Conv1d(input_channel, 32, kernel_size=conv_win, padding='same'),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.BatchNorm1d(32),
+            nn.MaxPool1d(kernel_size=2),
+
+            nn.Conv1d(32, 32, kernel_size=conv_win, padding='same'),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.BatchNorm1d(32),
+            nn.MaxPool1d(kernel_size=2),
+
+            nn.Conv1d(32, 32, kernel_size=conv_win, padding='same'),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.BatchNorm1d(32),
+            nn.MaxPool1d(kernel_size=4),
+        )
+
+        self.flatten = nn.Flatten()
+
+        self.positional_encoding = PositionalEncoding(dropout=dropout_rate)
+        # Transformer Encoder layers
+        encoder_layers = nn.TransformerEncoderLayer(d_model=4, nhead=num_heads, dim_feedforward=2048, dropout=dropout_rate)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer=encoder_layers, num_layers=len(transformer_units))
+        self.flatten_trans = nn.Flatten()
+
+        self.dense_layers = nn.Sequential(
+            #nn.Linear(seq_size * (32 + input_channel), 32),  # Adjust input dimension 
+            nn.Linear(5988, 32),
+            # based on your final concatenated features size
+            nn.ReLU(),
+            nn.BatchNorm1d(32),
+            nn.Dropout(dropout_rate),
+
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.BatchNorm1d(16),
+            nn.Dropout(dropout_rate),
+
+            nn.Linear(16, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # Convolutional branch
+        #x_conv = x.permute(0, 2, 1)  # Change to (batch, channels, length)
+        x_conv = self.conv_layers(x)
+        x_conv = self.flatten(x_conv)
+        #print(f"x_conv {x_conv.shape}")
+
+        # Transformer branch
+  # Transformer branch, reshape x from [batch, channels, length] to [length, batch, channels] for transformer
+        x_trans = x.permute(2, 0, 1)  # Reshape for transformer
+        #print(f"x_trans {x_trans.shape}")
+        x_trans = self.positional_encoding(x_trans)
+        x_trans = self.transformer_encoder(x_trans)
+       #print(f"x_trans transformer {x_trans.shape}")
+        x_trans = x_trans.permute(1, 2, 0)  # Revert to (batch, features, seq_len) for Flatten
+
+        #print(f"x_trans transformer permute {x_trans.shape}")
+        x_trans = self.flatten_trans(x_trans)
+
+        #print(f"x_trans transformer flatten {x_trans.shape}")
+
+
+        # Concatenate convolutional and transformer branches
+        x = torch.cat((x_conv, x_trans), dim=1)
+
+        # Dense layers
+        x = self.dense_layers(x)
+
+        return x*100
+
+
+
+class model_v3(nn.Module):
+
+    def __init__(self,num_task,use_embedding):
+        super(model_v3,self).__init__()
+
+        self.num_task = num_task
+        self.use_embedding = use_embedding
+        if self.use_embedding:
+            self.embed = EmbeddingSeq('data/embeddings/embeddings_12RM.pkl') # Word2Vec
+            # self.embed = EmbeddingHmm(t=3,out_dims=300) # hmm
+            self.NaiveBiLSTM = nn.LSTM(input_size=300,hidden_size=256,batch_first=True,bidirectional=True)
+        else:
+            self.NaiveBiLSTM = nn.LSTM(input_size=4,hidden_size=256,batch_first=True,bidirectional=True)
+
+        self.Attention = BahdanauAttention(in_features=512,hidden_units=100,num_task=num_task)
+        for i in range(num_task):
+            setattr(self, "NaiveFC%d" %i, nn.Sequential(
+                                       nn.Linear(in_features=512,out_features=128),
+                                       nn.ReLU(),
+                                       nn.Dropout(),
+                                       nn.Linear(in_features=128,out_features=1),
+                                       nn.Sigmoid()
+                                                    ))
+
+    def forward(self,x):
+
+        if self.use_embedding:
+            x = self.embed(x)
+        else:
+            x = torch.transpose(x,1,2)
+        batch_size = x.size()[0]
+        # x = torch.transpose(x,1,2)
+
+        output,(h_n,c_n) = self.NaiveBiLSTM(x)
+        h_n = h_n.view(batch_size,output.size()[-1])
+        context_vector,attention_weights = self.Attention(h_n,output)
+        # print(attention_weights.shape)
+        outs = []
+        for i in range(self.num_task):
+            FClayer = getattr(self, "NaiveFC%d" %i)
+            y = FClayer(context_vector[:,i,:])
+            y = torch.squeeze(y, dim=-1)
+            outs.append(y)
+
+        return outs
 
 
 
@@ -125,7 +274,7 @@ class NaiveModelV3(nn.Module):
             nn.ReLU(),
             nn.MaxPool1d(kernel_size=2,padding=0) #[bs 256 62]
             )
-        self.biiLSTM = nn.LSTM(input_size=256,hidden_size=256,batch_first=True,bidirectional=True, num_layers=2)
+        self.biLSTM = nn.LSTM(input_size=256,hidden_size=256,batch_first=True,bidirectional=True, num_layers=2)
         cnn_features = 62
         self.Flatten = nn.Flatten() # 128*12*2 -> biLSTM
         self.FC1= nn.Sequential(nn.Linear(in_features=2*256*cnn_features,out_features=1024),
@@ -145,7 +294,7 @@ class NaiveModelV3(nn.Module):
     def forward(self, x) -> None:
         out = self.NaiveCNN(x)
         out = out.permute(0, 2, 1) #[bs 12 128]
-        out, h = self.biiLSTM(out)
+        out, h = self.biLSTM(out)
         out = self.Flatten(out) # flatten output
         out = self.FC1(out)
         out = self.FC2(out)
@@ -199,27 +348,17 @@ class NaiveModelV4(nn.Module):
     
 
 class MultiRMModel(nn.Module):
+    def __init__(self,num_task=1,use_embedding=False):
+        super(MultiRMModel,self).__init__()
 
-    def __init__(self,num_task):
-        super().__init__()
-
-        # self.num_task = num_task
-        # self.use_embedding = use_embedding
-        # if self.use_embedding:
-        #     self.embed = EmbeddingHmm(t=3,out_dims=256) # hmm
-        #     self.NaiveBiLSTM = nn.LSTM(input_size=256,hidden_size=256,batch_first=True,bidirectional=True)
-        # else:
-        self.NaiveCNN = nn.Sequential(
-                        nn.Conv1d(in_channels=4,out_channels=8,kernel_size=7,stride=2,padding=0),
-                        nn.ReLU(),
-                        nn.Dropout(p=0.2),
-                        nn.Conv1d(in_channels=8,out_channels=32,kernel_size=3,stride=1,padding=1),
-                        nn.ReLU(),
-                        nn.MaxPool1d(kernel_size=2,padding=0),
-                        nn.Dropout(p=0.2)
-                        )
-
-        self.NaiveBiLSTM = nn.LSTM(input_size=4,hidden_size=256,batch_first=True,bidirectional=True)
+        self.num_task = num_task
+        self.use_embedding = use_embedding
+        if self.use_embedding:
+            self.embed = EmbeddingSeq('data/embeddings/embeddings_12RM.pkl') # Word2Vec
+            # self.embed = EmbeddingHmm(t=3,out_dims=300) # hmm
+            self.NaiveBiLSTM = nn.LSTM(input_size=300,hidden_size=256,batch_first=True,bidirectional=True)
+        else:
+            self.NaiveBiLSTM = nn.LSTM(input_size=4,hidden_size=256,batch_first=True,bidirectional=True)
 
         self.Attention = BahdanauAttention(in_features=512,hidden_units=100,num_task=num_task)
         self.NaiveFC1 = nn.Sequential(
@@ -231,7 +370,6 @@ class MultiRMModel(nn.Module):
                                                     )
 
     def forward(self,x):
-
         x = torch.transpose(x,1,2)
         batch_size = x.size()[0]
         # x = torch.transpose(x,1,2)
@@ -241,8 +379,67 @@ class MultiRMModel(nn.Module):
         context_vector,attention_weights = self.Attention(h_n,output)
         # print(attention_weights.shape)
         out = self.NaiveFC1(context_vector[:,0,:])
-        out = torch.squeeze(out, dim=-1)
-        return out.unsqueeze(1)
+        out = torch.squeeze(out*100, dim=-1)
+        return out.unsqueeze(1) 
+    
+class ConfigurableModel(nn.Module):
+    ## CNN + LSTM
+    def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=7, cnn_length=3, 
+                 cnn_other_filter=32, cnn_other_kernel_size=6, bilstm_layer=2, bilstm_hidden_size=128, fc_size=256, output_size=1) -> None:
+        super().__init__()
+        self.CNN = torch.nn.Sequential()
+
+        seq_length = input_size
+        for i in range(cnn_length):
+            if i == 0:
+                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=input_channel, out_channels=cnn_first_filter,kernel_size=cnn_first_kernel_size,stride=2,padding=0)
+                )
+                self.CNN.add_module(f"BatchNorm_{i+1}", nn.BatchNorm1d(num_features=cnn_first_filter))
+
+                seq_length = ((input_size - (1 * (cnn_first_kernel_size - 1 )) - 1)/2) + 1
+            elif i == 1:
+                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=cnn_first_filter, out_channels=cnn_other_filter, kernel_size=cnn_other_kernel_size, stride=1, padding=1))
+            else:
+                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=cnn_other_filter, out_channels=cnn_other_filter, kernel_size=cnn_other_kernel_size, stride=1, padding=1))
+                seq_length = ((seq_length + (2*1) - (1 * (cnn_other_kernel_size - 1 )) - 1)/1) + 1
+
+            if i != 0:
+                self.CNN.add_module(f"BATCHNORM_{i+1}", nn.BatchNorm1d(num_features=cnn_other_filter))
+
+            self.CNN.add_module(f"RELU_{i+1}", torch.nn.ReLU())
+
+            self.CNN.add_module(f"DROPOUT_{i+1}", torch.nn.Dropout())
+        
+        self.biLSTM = nn.LSTM(input_size=cnn_other_filter,hidden_size=bilstm_hidden_size,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
+        
+        self.flatten = nn.Flatten()
+
+        self.FC = nn.Sequential(
+            # nn.Linear(in_features=int(2*bilstm_hidden_size*seq_length),out_features=fc_size),
+            nn.LazyLinear(out_features=fc_size),
+            # based on your final concatenated features size
+            nn.ReLU(),
+            nn.BatchNorm1d(fc_size),
+            nn.Dropout(),
+            nn.Linear(fc_size, 64),
+            nn.ReLU(),
+            nn.BatchNorm1d(64),
+            nn.Dropout(),
+
+            nn.Linear(64, output_size),
+            nn.Sigmoid()
+
+        )
+    
+    def forward(self, x) -> None:
+        out = self.CNN(x) #[bs feature_dim seq_length]
+        out = out.permute(0, 2, 1) #[bs seq_length feature_dim]
+        out, h = self.biLSTM(out) #[bs seq_length feature_dim]
+        out = self.flatten(out) 
+        out = self.FC(out)
+        out = out*100
+        return out
+
 
 
 
@@ -252,7 +449,7 @@ if __name__=="__main__":
     stride=2 
     padding=0
     dilation=1
-    lout = ((1001 + (2*padding) - (dilation * (kernel_size - 1 )) - 1)/stride) + 1
+    lout = ((2001 + (2*padding) - (dilation * (kernel_size - 1 )) - 1)/stride) + 1
     print(lout)
     kernel_size=3 
     stride=1
@@ -260,6 +457,14 @@ if __name__=="__main__":
     lout = ((lout + (2*padding) - (dilation * (kernel_size - 1 )) - 1)/stride) + 1
     print(lout)
     lout = (lout + 2*0 - 1*(2-1)-1)/2 + 1
+
+
+
+    in_size = ((2001 - (1 * (7 - 1 )) - 1)/2) + 1
+    in_size = ((in_size + (2*1) - (1 * (3 - 1 )) - 1)/1) + 1
+    in_size = in_size/2
+    in_size = ((in_size + (2*1) - (1 * (3 - 1 )) - 1)/1) + 1
+    print(in_size)
     # print(lout)
     # kernel_size=3 
     # stride=1

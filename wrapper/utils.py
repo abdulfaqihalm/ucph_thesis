@@ -3,8 +3,9 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt 
 import pandas as pd
-from scipy.stats import pearsonr
 import seaborn as sns
+import random
+import os
 
 def one_hot(seq: str) -> np.ndarray:
     """
@@ -112,7 +113,21 @@ class EarlyStopper:
             if self.counter >= self.patience:
                 return True
         return False
+    
+def seed_everything(seed=1234):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 if __name__=="__main__":
