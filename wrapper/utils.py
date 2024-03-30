@@ -7,6 +7,8 @@ import seaborn as sns
 import random
 import os
 from scipy.stats import gaussian_kde
+from .gene2vec_embedding import gene2vec
+from gensim.models import Word2Vec
 
 def one_hot(seq: str) -> np.ndarray:
     """
@@ -28,24 +30,62 @@ def one_hot(seq: str) -> np.ndarray:
     result = np.array(result)
     return result.T
 
-def create_seq_tensor(path_to_fasta: str, idx: int|None=None) -> torch.Tensor:
+def get_record_by_index(path_to_fasta, target_index):
+    seq_records = list(SeqIO.parse(path_to_fasta, format="fasta"))
+    if target_index < len(seq_records):
+        return str(seq_records[target_index].seq)
+    else:
+        raise IndexError(f"Invalid index: {target_index}")
+
+def create_seq_tensor(path_to_fasta: str, idx: int|None=None, transform: str="one-hot", path_to_embedding: str|None=None) -> torch.Tensor:
     """
     Create a tensor of sequences from a fasta file
 
     param:  path_to_fasta: str: path to the fasta file
     param:  idx: int: index (row) of the sequence on the fasta file
+    param:  transform: str: transformation method ("one-hot" or "gene2vec")
+    param:  path_to_embedding: str: path to the embedding file (required if transform is "gene2vec")
     return: torch.Tensor: tensor of sequences
     """
-    if idx is None:
+    if transform == "one-hot":
         result = []
-        for seq_record in SeqIO.parse(path_to_fasta, format="fasta"):
-            result.append(one_hot(str(seq_record.seq)))
+        if idx is None:
+            seq_records = list(SeqIO.parse(path_to_fasta, format="fasta"))
+            for seq_record in seq_records:
+                try:
+                    result.append(one_hot(str(seq_record.seq)))
+                except ValueError as e:
+                    print(e)
+        else:
+            try:
+                result = one_hot(get_record_by_index(path_to_fasta, idx))
+            except IndexError:
+                raise ValueError(f"Invalid index: {idx}")
+    elif transform == "gene2vec":
+        if path_to_embedding is None:
+            raise ValueError("Path to embedding file is required for gene2vec transformation")
+        result = []
+        # print("Loading word2vec model")
+        embedding = Word2Vec.load(path_to_embedding)
+        # print("Finished loading word2vec model")
+        if idx is None:
+            seq_records = list(SeqIO.parse(path_to_fasta, format="fasta"))
+            for seq_record in seq_records:
+                try:
+                    result.append(gene2vec(str(seq_record.seq), embedding))
+                except ValueError as e:
+                    print(e)
+        else:
+            try:
+                result = gene2vec(get_record_by_index(path_to_fasta, idx), embedding)
+            except IndexError:
+                raise ValueError(f"Invalid index: {idx}")
     else:
-        seq_record = SeqIO.parse(path_to_fasta, format="fasta")
-        result = one_hot(str(list(seq_record)[idx].seq))
+        raise ValueError(f"Invalid transform option: {transform}")
     
     result = torch.from_numpy(np.array(result, dtype=np.float32))
     return result
+
 
 def plot_loss_function(result_path:str, output_path:str, output_name:str) -> None:
     """
@@ -68,7 +108,7 @@ def plot_loss_function(result_path:str, output_path:str, output_name:str) -> Non
     plt.savefig(f"{output_path}/{output_name}.png")
 
 
-def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str, output_name:str) -> None:
+def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str, output_name:str, title="") -> None:
     """
     Plot correlation
 
@@ -100,7 +140,7 @@ def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str, outp
     plt.figure()
 
     g = sns.JointGrid(xlim=(0,max), ylim=(0,max))
-    sns.scatterplot(x=y_true, y=y_pred, hue=z, s=8, ax=g.ax_joint, palette=color_palette, edgecolor='none', legend=False, alpha=0.5)
+    sns.scatterplot(x=y_true, y=y_pred, hue=z, s=6.5, ax=g.ax_joint, palette=color_palette, edgecolor='none', legend=False, alpha=0.3)
     sns.histplot(x=y_true, color=hist_color, edgecolor='none', ax=g.ax_marg_x)
     sns.histplot(y=y_pred, color=hist_color, edgecolor='none', ax=g.ax_marg_y)
     plt.text(80, 5, f'r = {corr_coef:.2f}', fontsize=12)
@@ -143,17 +183,45 @@ def seed_worker(worker_id):
 
 
 if __name__=="__main__":
-    # path_to_fasta = "data/train_test_data/motif_fasta_test_SPLIT_1.fasta"
+    from time import time
+    path_to_fasta = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
     # print(one_hot("ACGTN")) 
-    # # Should return:
-    # # [[1. 0. 0. 0. 0.]
-    # # [0. 1. 0. 0. 0.]
-    # # [0. 0. 1. 0. 0.]
-    # # [0. 0. 0. 1. 0.]]
+    # t = time()
+    # print(create_seq_tensor(path_to_fasta).shape)
+    # # torch.Size([103855, 4, 1001])
+    # # Time load data: 0.81 mins
+    # print('Time load data: {} mins'.format(round((time() - t) / 60, 2))) 
+    # Should return:
+    # [[1. 0. 0. 0. 0.]
+    # [0. 1. 0. 0. 0.]
+    # [0. 0. 1. 0. 0.]
+    # [0. 0. 0. 1. 0.]]
+    # path_to_embedding = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/embeddings/gene2vec/double_outputs/split_1.model"
+    # gene2vec_result = gene2vec("ACGTN", Word2Vec.load(path_to_embedding)) # Expect to return 3x300 
+    # print(gene2vec_result.shape)
+    # # # print(gene2vec_result)
+
+
+    # t = time()
+    # result = create_seq_tensor(path_to_fasta, transform="gene2vec", path_to_embedding=path_to_embedding)
+    # print(result.shape)
+    # # torch.Size([103855, 300, 999])
+    # # Time load data: 10.19 mins
+    # print('Time load data: {} mins'.format(round((time() - t) / 60, 2))) 
+    # print(result[0])
 
     # result = create_seq_tensor(path_to_fasta)
     # print(result.shape)
     # print(result)
-    out = pd.read_csv("/binf-isilon/renniegrp/vpx267/ucph_thesis/data/outputs/validation_1th_fold_case_m6_info-no_promoter-False_single_model_TEST_BEST_PARAM.csv")
-    plot_correlation(out.iloc[:,0], out.iloc[:,1], "data/outputs/analysis", "test_correlation")
+    # out = pd.read_csv("/binf-isilon/renniegrp/vpx267/ucph_thesis/data/outputs/validation_1th_fold_case_m6_info-no_promoter-False_single_model_TEST_BEST_PARAM.csv")
+    # plot_correlation(out.iloc[:,0], out.iloc[:,1], "data/outputs/analysis", "test_correlation")
     #plot_loss_function("data/outputs/logs/training_1th_fold_temp_tanh.log", "data/outputs/analysis", "TEST")
+
+
+
+
+    df = pd.read_csv("/binf-isilon/renniegrp/vpx267/ucph_thesis/data/outputs/predictions/validation_1th_fold_dual_outputs_m6_info-no_promoter-False_ONE_HOT_TEST_DUAL_OUTPUTS_BEST_PARAMS_NEW.csv")
+    df.head()
+    print(df.iloc[:,0].values)
+    plot_correlation(df.iloc[:,0], df.iloc[:,2], "data/outputs/analysis", "test_correlation_dual_outputs_control", "control")
+    plot_correlation(df.iloc[:,1], df.iloc[:,3], "data/outputs/analysis", "test_correlation_dual_outputs_case", "case")

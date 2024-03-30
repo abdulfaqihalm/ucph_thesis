@@ -1,7 +1,32 @@
 import torch
 from torch import nn 
+import torch.nn.functional as F
 import numpy as np 
 import pickle
+
+class BahdanauAttentionV2(nn.Module):
+    """
+    Input: 
+    """
+    def __init__(self, in_features, hidden_size) -> None:
+        super().__init__()
+        self.Wa = nn.Linear(in_features=in_features, out_features=hidden_size) # (batch_size, seq_len,hidden_size)
+        self.Ua = nn.Linear(in_features=in_features, out_features=hidden_size) # (num_directions*num_layers, batch_size, RNN_hidden_size)
+        self.Va = nn.Linear(in_features=hidden_size, out_features=1)
+    
+    def forward(self, query, keys):
+        """
+        param:  query:  previous hidden state of decoder
+        param:  keys:   last layer encoder outputs 
+
+
+        RNN_out: (batch_size, seq_len, num_directions*RNN_hidden_size)
+        RNN_hn: (num_directions*num_layers, batch_size, RNN_hidden_size)
+        """
+        weights = self.Va(torch.tanh(self.Wa(query) + self.Ua(keys)))   #self.Attention(h_n,output)
+        weights = F.softmax(weights, dim=1)
+
+        return
 
 class BahdanauAttention(nn.Module):
     """
@@ -25,26 +50,6 @@ class BahdanauAttention(nn.Module):
         context_vector = torch.matmul(values,attention_weights)
         context_vector = torch.transpose(context_vector,1,2)
         return context_vector, attention_weights
-
-
-    def forward(self,x):
-        """
-        Inputs:
-            x: RNA/DNA sequences using one-hot encoding, channel first: (bs,dims,seq_len)
-        Outputs:
-            miu: hmm encoding of RNA/DNA, channel last: (bs,seq_len,dims)
-        """
-        batch_size,length = x.shape[0], x.shape[-1]
-        V = torch.zeros((batch_size,self.T+1,length+2,length+2,self.out_dims)).cuda()
-        for i in range(1,self.T+1):
-            for j in range(1,length+1):
-                V[:,i,j,j+1,:] = self.relu(self.W1(x[:,:,j-1].clone())+self.W2(V[:,i-1,j-1,j,:].clone()))
-                V[:,i,j,j-1,:] = self.relu(self.W1(x[:,:,j-1].clone())+self.W2(V[:,i-1,j+1,j,:].clone()))
-        miu = torch.zeros((batch_size,length,self.out_dims)).cuda()
-
-        for i in range(1,length+1):
-            miu[:,i-1,:]= self.relu(self.W3(x[:,:,i-1].clone())+self.W4(V[:,self.T,i-1,i].clone())+self.W4(V[:,self.T,i+1,i].clone()))
-        return miu
 
 class EmbeddingSeq(nn.Module):
     def __init__(self,weight_dict_path):

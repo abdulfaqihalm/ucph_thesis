@@ -18,33 +18,12 @@ from torchmetrics.functional.regression import pearson_corrcoef
 import logging
 
 
-def train_seq(config): 
+def train_seq(config, train_loader, test_loader, target): 
     model = ConfigurableModel(cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                               cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"])
 
-    seed_everything(4455)                
-    target = "case"
-    i = 1
+    seed_everything(1234)                
     epochs = 30
-    data_folder = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/single_model/case"
-    add_promoter = False 
-    seq_fasta_train_path = f"{data_folder}/motif_fasta_train_SPLIT_{i}.fasta"
-    # meta_data_train_json_path = f"{data_folder}/train_label_SPLIT_{i}.json"
-    meta_data_train_json_path = f"{data_folder}/train_meta_data_SPLIT_{i}.json"
-    m6A_info_train_path = None
-
-    seq_fasta_test_path = f"{data_folder}/motif_fasta_test_SPLIT_{i}.fasta"
-    # meta_data_test_json_path = f"{data_folder}/test_label_SPLIT_{i}.json"
-    meta_data_test_json_path = f"{data_folder}/test_meta_data_SPLIT_{i}.json"
-    m6A_info_test_path = None
-
-    # add_promoter BOOL,
-    promoter_fasta_train_path = None 
-    promoter_fasta_test_path = None
-    if add_promoter:
-        promoter_fasta_train_path = f"{data_folder}/promoter_fasta_train_SPLIT_{i}.fasta"
-        promoter_fasta_test_path = f"{data_folder}/promoter_fasta_test_SPLIT_{i}.fasta"
-
 
     device = "cpu"
     if torch.cuda.is_available():
@@ -65,15 +44,6 @@ def train_seq(config):
             model.load_state_dict(model_state)
             optimizer.load_state_dict(optimizer_state)
 
-            
-    
-
-    train_dataset = SequenceDataset(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info_path=m6A_info_train_path, target=target)
-    test_dataset = SequenceDataset(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info_path=m6A_info_test_path, target=target)
-
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=2)
-    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False, num_workers=2)
-    
     early_stopper = EarlyStopper(patience=3, min_delta=0.01)   
     for epoch in range(1, epochs+1):    
         model.train()
@@ -86,7 +56,7 @@ def train_seq(config):
             seq = data["seq"].to(device, non_blocking=True)
             meth_true_val = data[f"meth_{target}"].to(device, non_blocking=True)
             
-            optimizer.zero_grad(set_to_none=True)
+            model.zero_grad(set_to_none=True) # safer than optimizer.zero_grad()
 
             meth_pred_val = model(seq)
             loss = criterion(meth_pred_val.squeeze(1), meth_true_val)
@@ -165,16 +135,16 @@ def train_seq(config):
 def main(num_samples=10, max_num_epochs=50, gpus_per_trial=3):
     seed_everything(4455)
     config = {
-        # Uniform distribuitino for choicing
-        "lr": tune.choice([1e-4, 1e-3, 1e-2]),
-        "cnn_first_filter": tune.choice([8, 10, 12]),
+        # Uniform distribuitinon
+        "lr": tune.choice([0.5e-2, 1e-3, 1e-2]),
+        "cnn_first_filter": tune.choice([8, 12, 16]), #  input and output channels to be divisible by 8 (for FP16) or 4 (for TF32) to run efficiently on Tensor Cores
         "cnn_first_kernel_size": tune.choice([5,7,9]),
         "cnn_length": tune.choice([2, 3]),
         "cnn_filter": tune.choice([32, 64]),
         "cnn_kernel_size": tune.choice([3, 5, 7]),
         "bilstm_layer": tune.choice([2, 3]),
-        "bilstm_hidden_size": tune.choice([128, 64]),
-        "fc_size": tune.choice([64, 128, 256])
+        "bilstm_hidden_size": tune.choice([256, 128, 64]), # 8 (for FP16) or 4 (for TF32) to run efficiently on Tensor Cores AND Divisible by at least 64 and ideally 256 to improve tiling efficiency   
+        "fc_size": tune.choice([64, 128, 256]) # Batch size and the number of inputs and outputs to be divisible by 4 (TF32) / 8 (FP16) / 16 (INT8) to run efficiently on Tensor Cores
     }
 
 
@@ -183,9 +153,37 @@ def main(num_samples=10, max_num_epochs=50, gpus_per_trial=3):
         grace_period=1,
         reduction_factor=2)
     
+    target = "case"
+    i = 1
+    data_folder = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/single_model/case"
+    add_promoter = False 
+    seq_fasta_train_path = f"{data_folder}/motif_fasta_train_SPLIT_{i}.fasta"
+    # meta_data_train_json_path = f"{data_folder}/train_label_SPLIT_{i}.json"
+    meta_data_train_json_path = f"{data_folder}/train_meta_data_SPLIT_{i}.json"
+    m6A_info_train_path = None
+
+    seq_fasta_test_path = f"{data_folder}/motif_fasta_test_SPLIT_{i}.fasta"
+    # meta_data_test_json_path = f"{data_folder}/test_label_SPLIT_{i}.json"
+    meta_data_test_json_path = f"{data_folder}/test_meta_data_SPLIT_{i}.json"
+    m6A_info_test_path = None
+
+    # add_promoter BOOL,
+    promoter_fasta_train_path = None 
+    promoter_fasta_test_path = None
+    if add_promoter:
+        promoter_fasta_train_path = f"{data_folder}/promoter_fasta_train_SPLIT_{i}.fasta"
+        promoter_fasta_test_path = f"{data_folder}/promoter_fasta_test_SPLIT_{i}.fasta"
+
+
+    train_dataset = SequenceDataset(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info_path=m6A_info_train_path, target=target)
+    test_dataset = SequenceDataset(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info_path=m6A_info_test_path, target=target)
+
+    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False, num_workers=2, pin_memory=True)
+    
     tuner = tune.Tuner(
         tune.with_resources(
-            tune.with_parameters(train_seq),
+            tune.with_parameters(train_seq, train_loader=train_loader, test_loader=test_loader, target=target),
             resources={"cpu": 1, "gpu": gpus_per_trial}
         ),
         tune_config=tune.TuneConfig(

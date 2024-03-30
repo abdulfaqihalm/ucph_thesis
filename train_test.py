@@ -8,6 +8,7 @@ import csv
 from torchmetrics.functional.regression import pearson_corrcoef
 from datetime import datetime
 from wrapper.utils import EarlyStopper
+from tqdm import tqdm
 
 def test(model: torch.nn.Module, test_loader: DataLoader,
           loss_fn: torch.nn.Module, target: None|str = "case", device: str="cpu") -> tuple[float, dict[str, float]]:
@@ -111,15 +112,15 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
         # Iterate in batches
 
         # logging.info(f"Starting batch")
-            
-        for batch, data in enumerate(train_loader):
+        epoch_iterator = tqdm(train_loader, desc="Train Loader Iteration")
+        for batch, data in enumerate(epoch_iterator):
             # logging.info(f"Processing batch: {batch}")
             # logging.info(f"Loading data to device: {device}")
             seq = data["seq"].to(device, non_blocking=True)
             meth_true_val = data[f"meth_{target}"].to(device, non_blocking=True)
             # logging.info(f"Finished loading data to device: {device}")
             
-            optimizer.zero_grad(set_to_none=True)
+            model.zero_grad(set_to_none=True) # safer than optimizer.zero_grad()
 
             # logging.info(f"Start to predict")
             meth_pred_val = model(seq)
@@ -211,6 +212,9 @@ if __name__=="__main__":
     parser.add_argument("--mode", help="Training or testing mode",required=True, 
                         choices=["train","test"])
     parser.add_argument("--learning_rate", help="Learning rate", default=0.001, type=float)
+    parser.add_argument("--adam_epsilon", default=1e-8, type=float, help="Epsilon for Adam optimizer.")
+    parser.add_argument("--adam_beta1", default=0.9, type=float, help="Beta1 for Adam optimizer.")
+    parser.add_argument("--adam_beta2", default=0.999, type=float, help="Beta2 for Adam optimizer.")         
     parser.add_argument("--gpu", default=[0,1], nargs='+', type=int)
     parser.add_argument("--loader_worker", default=0, type=int)
     parser.add_argument("--add_promoter", type=str2bool, nargs='?', const=True, default=False, help="Append promoter sequence[y/n]")
@@ -239,6 +243,9 @@ if __name__=="__main__":
     mode = args.mode
     plot = args.plot
     learning_rate = args.learning_rate
+    adam_epsilon = args.adam_epsilon
+    beta1 = args.adam_beta1
+    beta2 = args.adam_beta2
 
 
     device = (torch.device("cuda") if torch.cuda.is_available()
@@ -246,15 +253,15 @@ if __name__=="__main__":
     logging.info(f"Running on device: {device}")  
     
     # Set seed for everything. Important for reproducibilty see: https://www.kaggle.com/code/bminixhofer/deterministic-neural-networks-using-pytorch
-    # seed_everything(445566) # For other model configuration
+    seed_everything(445566) # For other model configuration
     # seed_everything(44) # For model with promoter
     # seed_everything(45) # For m6A_info: flag_channel, add_promoter: True, target: control
-    seed_everything(4455)  # best param 
+    # seed_everything(4455)  # best param 
     if mode=="train":
         logging.info(f"Training mode")
         logging.info(f"m6A_info: {m6A_info}, add_promoter: {add_promoter}, target: {target}")
         suffix = f"{target}_m6_info-{m6A_info}_promoter-{add_promoter}_{suffix}"
-        for i in range(4, 6): #5-folds SHOULD BE 6
+        for i in range(1, 6): #5-folds SHOULD BE 6
             logging.info(f"Fold-{i}")
             seq_fasta_train_path = f"{data_folder}/motif_fasta_train_SPLIT_{i}.fasta"
             # meta_data_train_json_path = f"{data_folder}/train_label_SPLIT_{i}.json"
@@ -289,14 +296,15 @@ if __name__=="__main__":
             train_dataset = SequenceDataset(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info=m6A_info, m6A_info_path=m6A_info_train_path, target=target)
             test_dataset = SequenceDataset(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info=m6A_info, m6A_info_path=m6A_info_test_path, target=target)
        
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=loader_worker)
-            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_worker)
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=loader_worker, pin_memory=True)
+            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=loader_worker, pin_memory=True)
             logging.info(f"Number of training batches: {len(train_loader)}, Total training sample: {len(train_loader.dataset)}")
             logging.info(f"Number of test batches: {len(test_loader)}, Total test sample: {len(test_loader.dataset)}")
 
             
             # 0.5MSE if delta<0.1, otherwise delta(|y-y_hat| - 0.5delta)
-            loss_fn = torch.nn.HuberLoss(delta=1)
+            # loss_fn = torch.nn.HuberLoss(delta=1)
+            loss_fn = torch.nn.MSELoss()
             # [HARD CODED] Input size here is hard coded for the naive model based on the data
             # 1001 means we have 500 down-up-stream nts
             #model = NaiveModelV2() 
@@ -307,22 +315,23 @@ if __name__=="__main__":
                 input_size = 2001
             logging.info(f"Input size: {input_size}")
             if m6A_info=="level_channel" or m6A_info=="flag_channel": 
-                # model = NaiveModelV2(input_channel=5, cnn_first_filter=8, input_size=input_size)
-                # model = ConvTransformerModel(input_channel=5)
+                input_channel = 5
+                model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
+                # model = ConvTransformerModel(input_channel=input_channel)
                 # model = MultiRMModel(1, True)
-                model = ConfigurableModel(cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
+                # model = ConfigurableModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
             else:
-                # model = NaiveModelV2(input_channel=4, cnn_first_filter=8, input_size=input_size)
-                # model = ConvTransformerModel(input_channel=4)
+                input_channel = 4
+                model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
+                # model = ConvTransformerModel(input_channel=input_channel)
                 # model = MultiRMModel(1, True)
-                model = ConfigurableModel(cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
+                # model = ConfigurableModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
 
             model.to(device)
             #model=torch.nn.DataParallel(model) 
-
-
             #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate) # here added the weight dacay
-            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate) # here added the weight dacay
+            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+            # optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, eps=adam_epsilon, betas=(beta1,beta2))
             #optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, weight_decay=1e-5) # here added the weight dacay for temp_w_l2reg. for temp no.
             #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=0.1) # here added exponenetial dcay for the optimizer
             # Train and Validate the model
@@ -338,8 +347,9 @@ if __name__=="__main__":
 
             save_val = True
             if save_val:
-                with open(f"{save_dir}/validation_{i}th_fold_{suffix}.csv", "w") as f:
+                with open(f"{save_dir}/predictions/validation_{i}th_fold_{suffix}.csv", "w") as f:
                     writer = csv.writer(f)
+                    writer.writerows([f"{target}_true",f"{target}_pred"])
                     writer.writerows(zip(pred_true["true"], pred_true["pred"]))
             logging.info(f"Finished on Fold-{i}")
     else:
