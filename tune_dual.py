@@ -9,7 +9,7 @@ import torch.optim as optim
 from ray import train, tune
 from ray.train import Checkpoint, RunConfig
 from ray.tune.schedulers import ASHAScheduler
-from model import ConfigurableModel
+from model import ConfigurableModel, ConfigurableModelWoBatchNormDropout
 from wrapper.data_setup import SequenceDatasetDual, SequenceDatasetDualGene2Vec
 from torchmetrics.wrappers import MultioutputWrapper
 from torchmetrics.regression import PearsonCorrCoef, MeanSquaredError, MeanAbsoluteError
@@ -20,7 +20,7 @@ import logging
 from argparse import ArgumentParser
 
 def train_seq(config, input_channel, input_size, train_loader, test_loader): 
-    model = ConfigurableModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+    model = ConfigurableModelWoBatchNormDropout(input_channel=input_channel, input_size=input_size, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                               cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                               output_size=2)
 
@@ -89,8 +89,8 @@ def train_seq(config, input_channel, input_size, train_loader, test_loader):
                 loss2 = criterion(meth_pred_val[:,1], meth_true_val[:,1])
                 loss = loss1 + loss2
 
-                pred = torch.cat([pred, meth_true_val.cpu().detach()])
-                true = torch.cat([true, meth_pred_val.cpu().detach()])
+                pred = torch.cat([pred, meth_pred_val.cpu().detach()])
+                true = torch.cat([true, meth_true_val.cpu().detach()])
                 
                 # Total of average loss from each samples in a batch. Huberloss reduction is mean by default
                 test_loss += loss.item()
@@ -170,20 +170,20 @@ def main(num_samples=10, max_num_epochs=50, gpus_per_trial=1, args=None):
         embedding_file = f"{args.embedding_file}/split_{i}.model"
     print("Generate Dataset")
     # # Just remove the embedding related argument to tune one-hot
-    # train_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info=m6A_info_train_path, m6A_info_path=m6A_info_train_path, transform=args.embedding, path_to_embedding=embedding_file)
-    # test_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info=m6A_info_test_path, m6A_info_path=m6A_info_test_path, transform=args.embedding, path_to_embedding=embedding_file)
+    train_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info=m6A_info_train_path, m6A_info_path=m6A_info_train_path, transform=args.embedding, path_to_embedding=embedding_file)
+    test_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info=m6A_info_test_path, m6A_info_path=m6A_info_test_path, transform=args.embedding, path_to_embedding=embedding_file)
     
     # USE BIG WORKER FOR THIS
-    path_to_seq = "data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
-    hdf_file = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs/hdf5/gene2vec.hdf5"
-    path_to_prom = "data/dual_outputs/promoter_fasta_test_SPLIT_1.fasta"
-    path_to_meta_data_train = "data/dual_outputs/train_meta_data_SPLIT_1.json"
-    path_to_meta_data_test = "data/dual_outputs/test_meta_data_SPLIT_1.json"
-    path_to_embedding = "data/embeddings/gene2vec/dual_outputs/split_1.model"
-    input_channel = 300
-    input_size = 999
-    train_dataset = SequenceDatasetDualGene2Vec(hdf_file, dataset="train/motif_SPLIT_1",  meta_data_path=path_to_meta_data_train)
-    test_dataset = SequenceDatasetDualGene2Vec(hdf_file, dataset="test/motif_SPLIT_1",  meta_data_path=path_to_meta_data_test)
+    # path_to_seq = "data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
+    # hdf_file = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs/hdf5/gene2vec.hdf5"
+    # path_to_prom = "data/dual_outputs/promoter_fasta_test_SPLIT_1.fasta"
+    # path_to_meta_data_train = "data/dual_outputs/train_meta_data_SPLIT_1.json"
+    # path_to_meta_data_test = "data/dual_outputs/test_meta_data_SPLIT_1.json"
+    # path_to_embedding = "data/embeddings/gene2vec/dual_outputs/split_1.model"
+    # input_channel = 300
+    # input_size = 999
+    # train_dataset = SequenceDatasetDualGene2Vec(hdf_file, dataset="train/motif_SPLIT_1",  meta_data_path=path_to_meta_data_train)
+    # test_dataset = SequenceDatasetDualGene2Vec(hdf_file, dataset="test/motif_SPLIT_1",  meta_data_path=path_to_meta_data_test)
     print("Finished Generate Dataset")
     print("Starting dataloader setup")
     train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=5)
@@ -191,7 +191,7 @@ def main(num_samples=10, max_num_epochs=50, gpus_per_trial=1, args=None):
     print("Finished dataloader setup")
     tuner = tune.Tuner(
         tune.with_resources(
-            tune.with_parameters(train_seq, input_channel=300, input_size=999, train_loader=train_loader, test_loader=test_loader),
+            tune.with_parameters(train_seq, input_channel=4, input_size=1001, train_loader=train_loader, test_loader=test_loader),
             resources={"cpu": 1, "gpu": gpus_per_trial}
         ),
         tune_config=tune.TuneConfig(
@@ -214,15 +214,21 @@ def main(num_samples=10, max_num_epochs=50, gpus_per_trial=1, args=None):
         best_result.metrics["loss"]))
     print(f"Best trial final validation control pearson correlation: {best_result.metrics['val_control_pearson_corr']}, case pearson correlation: {best_result.metrics['val_case_pearson_corr']}")
 
+    print(f"Saving the summary into a dataframe... ")
+    results_df = results.get_dataframe()
+    results_df.to_csv(f"{args.tune_output_path}/{args.tune_output_folder_name}/results_summary.csv", index=False)
+
 if __name__ == "__main__":
     """
     EXAMPLE
     -----
 
     python tune_dual.py --embedding gene2vec --embedding_file data/embeddings/gene2vec/double_outputs --tune_output_path /binf-isilon/renniegrp/vpx267/ucph_thesis/ray_results --tune_output_folder_name gene2vec --num_samples 100 --max_num_epochs 15
+
+    python tune_dual.py --embedding one-hot --tune_output_path /binf-isilon/renniegrp/vpx267/ucph_thesis/ray_results --tune_output_folder_name wo_batchnorm_dropout_dual --num_samples 200 --max_num_epochs 20
     """
     parser = ArgumentParser(
-        description="Running Ray Tuning"
+        description="Running Ray Tuning for dual output"
     )
     parser.add_argument("--embedding", default='one-hot',const='one-hot', nargs='?', 
                         choices=['one-hot', 'gene2vec'], 

@@ -177,7 +177,7 @@ if __name__=="__main__":
 
     from wrapper.data_setup import SequenceDataset
     from wrapper.utils import plot_loss_function, plot_correlation, seed_everything
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModel
+    from model import ConfigurableModelWoBatchNormDropout, NaiveModelV2, NaiveModelV2WoBatchNormDropOut, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModel
     import sys
 
     # Set logging template
@@ -316,16 +316,16 @@ if __name__=="__main__":
             logging.info(f"Input size: {input_size}")
             if m6A_info=="level_channel" or m6A_info=="flag_channel": 
                 input_channel = 5
-                # model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
+                model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
                 # model = ConvTransformerModel(input_channel=input_channel)
                 # model = MultiRMModel(1, True)
-                model = ConfigurableModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
+                # model = ConfigurableModelWoBatchNormDropout(input_channel=input_channel, input_size=input_size, cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
             else:
                 input_channel = 4
-                # model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
+                model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
                 # model = ConvTransformerModel(input_channel=input_channel)
                 # model = MultiRMModel(1, True)
-                model = ConfigurableModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
+                # model = ConfigurableModelWoBatchNormDropout(input_channel=input_channel, input_size=input_size, cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
 
             model.to(device)
             #model=torch.nn.DataParallel(model) 

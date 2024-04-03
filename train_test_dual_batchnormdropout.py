@@ -90,7 +90,7 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     if not optimizer:
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-    early_stopper = EarlyStopper(patience=3, min_delta=0.01)    
+    early_stopper = EarlyStopper(patience=2, min_delta=0.01)    
     
     for epoch in range(1, epochs+1):    
         model.train()
@@ -151,7 +151,7 @@ if __name__=="__main__":
 
     from wrapper.data_setup import SequenceDatasetDual, SequenceDatasetDualGene2Vec
     from wrapper.utils import plot_loss_function, plot_correlation, seed_everything
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModel
+    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModel, ConfigurableModelWoBatchNormDropout
     import sys
 
     # Set logging template
@@ -281,14 +281,14 @@ if __name__=="__main__":
                     # model = NaiveModelV2(input_channel=5, cnn_first_filter=8, input_size=input_size)
                     # model = ConvTransformerModel(input_channel=5)
                     # model = MultiRMModel(1, True)
-                    model = ConfigurableModel(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                    model = ConfigurableModelWoBatchNormDropout(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                                 cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                                 output_size=2)
                 else:
                     # model = NaiveModelV2(input_channel=4, cnn_first_filter=8, input_size=input_size, output_dim=2)
                     # model = ConvTransformerModel(input_channel=4)
                     # model = MultiRMModel(1, True)
-                    model = ConfigurableModel(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                    model = ConfigurableModelWoBatchNormDropout(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                                 cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                                 output_size=2)
             if args.embedding=="gene2vec":
@@ -302,7 +302,7 @@ if __name__=="__main__":
 
 
             #optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate) # here added the weight dacay
-            optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(args.adam_beta1, args.adam_beta2)) # here added the weight dacay
+            optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(args.adam_beta1, args.adam_beta2), weight_decay=0.05) # here added the weight dacay
             #optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, weight_decay=1e-5) # here added the weight dacay for temp_w_l2reg. for temp no.
             #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=0.1) # here added exponenetial dcay for the optimizer
             # Train and Validate the model

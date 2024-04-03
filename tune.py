@@ -9,17 +9,16 @@ import torch.optim as optim
 from ray import train, tune
 from ray.train import Checkpoint, RunConfig
 from ray.tune.schedulers import ASHAScheduler
-from model import ConfigurableModel
+from model import ConfigurableModel, ConfigurableModelWoBatchNormDropout
 from wrapper.data_setup import SequenceDataset
 from wrapper.utils import seed_everything
 from torch.utils.data import DataLoader
 from wrapper.utils import EarlyStopper
 from torchmetrics.functional.regression import pearson_corrcoef
-import logging
-
+from argparse import ArgumentParser
 
 def train_seq(config, train_loader, test_loader, target): 
-    model = ConfigurableModel(cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+    model = ConfigurableModelWoBatchNormDropout(cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                               cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"])
 
     seed_everything(1234)                
@@ -118,7 +117,7 @@ def train_seq(config, train_loader, test_loader, target):
                     "pred": pred.numpy(),
                     "true": true.numpy()}
 
-        logging.info(f"Epoch: {epoch}, train_loss: {train_loss:.7f}, val_loss: {test_loss:.7f}, val_mse:{metrics['mse']:.7f}, val_rmse: {metrics['rmse']:.7f}, val_mae: {metrics['mae']:.7f}, val_pearson_corr: {metrics['pearson_corr']:.7f}")
+        print(f"Epoch: {epoch}, train_loss: {train_loss:.7f}, val_loss: {test_loss:.7f}, val_mse:{metrics['mse']:.7f}, val_rmse: {metrics['rmse']:.7f}, val_mae: {metrics['mae']:.7f}, val_pearson_corr: {metrics['pearson_corr']:.7f}")
 
         with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
             path = os.path.join(temp_checkpoint_dir, "checkpoint.pt")
@@ -132,8 +131,8 @@ def train_seq(config, train_loader, test_loader, target):
             )
 
 
-def main(num_samples=10, max_num_epochs=50, gpus_per_trial=3):
-    seed_everything(4455)
+def main(num_samples=10, max_num_epochs=50, gpus_per_trial=3, args=None):
+    seed_everything(1234)
     config = {
         # Uniform distribuitinon
         "lr": tune.choice([0.5e-2, 1e-3, 1e-2]),
@@ -192,10 +191,10 @@ def main(num_samples=10, max_num_epochs=50, gpus_per_trial=3):
             scheduler=scheduler,
             reuse_actors=False,
             num_samples=num_samples,
-            max_concurrent_trials=7,
+            max_concurrent_trials=5,
         ),
         param_space=config,
-        run_config=RunConfig(storage_path="/binf-isilon/renniegrp/vpx267/ucph_thesis/ray_results/adam", name="test_experiment")
+        run_config=RunConfig(storage_path=args.tune_output_path, name=args.tune_output_folder_name)
     )
     results = tuner.fit()
     
@@ -207,4 +206,26 @@ def main(num_samples=10, max_num_epochs=50, gpus_per_trial=3):
     print("Best trial final validation pearson correlation: {}".format(
         best_result.metrics["pearson_corr"]))
 
-main(num_samples=500, max_num_epochs=15, gpus_per_trial=1)
+if __name__ == "__main__":
+    """
+    EXAMPLE
+    -----
+
+    python tune.py --tune_output_path /binf-isilon/renniegrp/vpx267/ucph_thesis/ray_results --tune_output_folder_name wo_batchnorm_dropout_single_case --num_samples 200 --max_num_epochs 50
+    """
+    parser = ArgumentParser(
+        description="Running Ray Tuning"
+    )
+    parser.add_argument("--embedding", default='one-hot',const='one-hot', nargs='?', 
+                        choices=['one-hot', 'gene2vec'], 
+                        help="Embedding options ['one-hot', 'gene2vec']")
+    parser.add_argument("--embedding_file", default=None, help="Embedding file for gene2vec")
+    parser.add_argument("--tune_output_path", default="ray_results", help="Output path for tune")
+    parser.add_argument("--tune_output_folder_name", default="tuning", help="Output folder name for tune")
+    parser.add_argument("--num_samples", default=50, type=int, help="number of samples for ray tuning")
+    parser.add_argument("--max_num_epochs", default=15, type=int, help="number of samples for ray tuning")
+    args = parser.parse_args()
+
+    print(args)
+
+    main(num_samples=args.num_samples, max_num_epochs=args.max_num_epochs, gpus_per_trial=1, args=args)
