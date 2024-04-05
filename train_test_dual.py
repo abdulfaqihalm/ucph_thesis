@@ -86,11 +86,8 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     logfile = open(f"{save_dir}/logs/training_{suffix}.log", "w+")
     logger = csv.DictWriter(logfile, fieldnames=["epoch", "train_loss", "val_control_loss", "val_control_rmse", "val_control_mse", "val_control_mae", "val_control_pearson_corr", "val_case_loss", "val_case_rmse", "val_case_mse", "val_case_mae", "val_case_pearson_corr"])
     logger.writeheader()
-
-    if not optimizer:
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-    early_stopper = EarlyStopper(patience=3, min_delta=0.01)    
+    early_stopper = EarlyStopper(patience=2, min_delta=0.0001)    
     
     for epoch in range(1, epochs+1):    
         model.train()
@@ -151,7 +148,7 @@ if __name__=="__main__":
 
     from wrapper.data_setup import SequenceDatasetDual, SequenceDatasetDualGene2Vec
     from wrapper.utils import plot_loss_function, plot_correlation, seed_everything
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModel
+    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel
     import sys
 
     # Set logging template
@@ -265,34 +262,37 @@ if __name__=="__main__":
 
             
             # 0.5MSE if delta<0.1, otherwise delta(|y-y_hat| - 0.5delta)
-            loss_fn = torch.nn.HuberLoss(delta=1)
-            # [HARD CODED] Input size here is hard coded for the naive model based on the data
-            # 1001 means we have 500 down-up-stream nts
-            #model = NaiveModelV2() 
-            #model = MultiRMModel(num_task=1)
-
+            # loss_fn = torch.nn.HuberLoss(delta=1)
+            loss_fn = torch.nn.MSELoss()
             dual_outputs = True
-            # input_size = train_dataset.seq.shape[2]
-            # logging.info(f"Input size: {input_size}")
-            config = {'cnn_first_filter': 10, 'cnn_first_kernel_size': 9, 'cnn_length': 2, 'cnn_filter': 64, 'cnn_kernel_size': 5, 'bilstm_layer': 3, 'bilstm_hidden_size': 64, 'fc_size': 256}
+            input_size = train_dataset.seq.shape[2]
+            logging.info(f"Input size: {input_size}")
+            # lr = 0.01
+            config = {'cnn_first_filter': 16, 'cnn_first_kernel_size': 9, 'cnn_length': 3, 'cnn_filter': 32, 'cnn_kernel_size': 7, 'bilstm_layer': 3, 'bilstm_hidden_size': 128, 'fc_size': 64}
             
             if args.embedding=="one-hot":
                 if args.m6A_info=="level_channel" or args.m6A_info=="flag_channel": 
                     # model = NaiveModelV2(input_channel=5, cnn_first_filter=8, input_size=input_size)
                     # model = ConvTransformerModel(input_channel=5)
                     # model = MultiRMModel(1, True)
-                    model = ConfigurableModel(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                                cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                    # model = ConfigurableModelWoBatchNorm(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                                # cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                                # output_size=2)
+                    model = TestMotifModel(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                                cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                                 output_size=2)
                 else:
                     # model = NaiveModelV2(input_channel=4, cnn_first_filter=8, input_size=input_size, output_dim=2)
                     # model = ConvTransformerModel(input_channel=4)
                     # model = MultiRMModel(1, True)
-                    model = ConfigurableModel(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                                cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                    # model = ConfigurableModelWoBatchNorm(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                    #             cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                    #             output_size=2)
+                    model = TestMotifModel(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                                cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                                 output_size=2)
             if args.embedding=="gene2vec":
-                model = ConfigurableModel(input_channel=300, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                model = ConfigurableModelWoBatchNorm(input_channel=300, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                             cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                             output_size=2)
             
@@ -300,11 +300,8 @@ if __name__=="__main__":
             model.to(device)
             #model=torch.nn.DataParallel(model) 
 
-
-            #optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate) # here added the weight dacay
-            optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(args.adam_beta1, args.adam_beta2)) # here added the weight dacay
+            optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(args.adam_beta1, args.adam_beta2), weight_decay=0.1) # here added the weight dacay
             #optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, weight_decay=1e-5) # here added the weight dacay for temp_w_l2reg. for temp no.
-            #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=0.1) # here added exponenetial dcay for the optimizer
             # Train and Validate the model
             _, pred_true = train(model=model, train_loader=train_loader, test_loader=test_loader, epochs=num_epochs, loss_fn=loss_fn, save_dir=args.save_dir, learning_rate=args.learning_rate, device=device, optimizer=optimizer, suffix=f"{i}th_fold_{suffix}")
 

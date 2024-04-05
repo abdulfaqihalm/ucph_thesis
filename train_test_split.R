@@ -7,7 +7,7 @@ library(fuzzyjoin)
 library(rsample) # For kvold split
 library(BSgenome.Hsapiens.NCBI.GRCh38)
 library(TxDb.Hsapiens.UCSC.hg38.knownGene) #v44 Gencode
-library(BSgenome.Mmusculus.UCSC.mm39) # For MEF 
+# library(BSgenome.Mmusculus.UCSC.mm39) # For MEF 
 
 # Subject to change
 DATA_FOLDER <- '/Users/faqih/Documents/UCPH/Thesis/code/data/'
@@ -15,7 +15,7 @@ data_path <- '/Users/faqih/Documents/UCPH/Thesis/code/data/'
 
 # A rate serving as the m6A level
 # Has transcript and gene info
-GRE_folder = '/Users/faqih/Documents/UCPH/Thesis/papers/GLORI/GLORI_data/GSE210563_RAW/'
+GRE_folder = '/binf-isilon/renniegrp/vpx267/ucph_thesis/data/GLORI_data'
 hela_1 <- read.csv(paste0(GRE_folder,'GSM6432595_Hela-1_35bp_m2.totalm6A.FDR.csv'), sep = "\t")
 hela_2 <- read.csv(paste0(GRE_folder,'GSM6432596_Hela-2_35bp_m2.totalm6A.FDR.csv'), sep = "\t")
 mef_1 <- read.csv(paste0(GRE_folder,'GSM6432601_MEF-1_35bp_m2.totalm6A.FDR.csv'), sep = "\t")

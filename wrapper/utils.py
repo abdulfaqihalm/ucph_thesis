@@ -37,6 +37,23 @@ def get_record_by_index(path_to_fasta, target_index):
     else:
         raise IndexError(f"Invalid index: {target_index}")
 
+def one_hot_to_sequence(one_hot_seq: np.ndarray):
+    """
+    Convert one-hot encoding to sequence
+    Expecting the sahpe of [seq_length, 4]
+    """
+    if torch.is_tensor(one_hot_seq):
+        one_hot_seq = one_hot_seq.numpy()
+    if one_hot_seq.shape[1] != 4:
+        raise ValueError(f"Invalid shape: {one_hot_seq.shape}. Need to be [seq_length, 4]")
+    
+    look_up_table = {0: "A", 1: "C", 2: "G", 3: "T"}
+    result = []
+    for i in range(one_hot_seq.shape[0]):
+        base = np.argmax(one_hot_seq[i, :]) # along column of size 4
+        result.append(look_up_table[base] if base in look_up_table else "N")
+    return "".join(result)
+
 def create_seq_tensor(path_to_fasta: str, idx: int|None=None, transform: str="one-hot", path_to_embedding: str|None=None) -> torch.Tensor:
     """
     Create a tensor of sequences from a fasta file
@@ -108,7 +125,7 @@ def plot_loss_function(result_path:str, output_path:str, output_name:str) -> Non
     plt.savefig(f"{output_path}/{output_name}.png")
 
 
-def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str, output_name:str, title="") -> None:
+def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str="", output_name:str="", title="", interactive=False) -> None:
     """
     Plot correlation
 
@@ -143,10 +160,13 @@ def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str, outp
     sns.scatterplot(x=y_true, y=y_pred, hue=z, s=6.5, ax=g.ax_joint, palette=color_palette, edgecolor='none', legend=False, alpha=0.3)
     sns.histplot(x=y_true, color=hist_color, edgecolor='none', ax=g.ax_marg_x)
     sns.histplot(y=y_pred, color=hist_color, edgecolor='none', ax=g.ax_marg_y)
-    plt.text(80, 5, f'r = {corr_coef:.2f}', fontsize=12)
+    plt.text(0.8*max, 0.02*max, f'r = {corr_coef:.2f}', fontsize=12)
     g.set_axis_labels('True Val', 'Pred Val', fontsize=12)
     g.ax_joint.plot([0, max], [0, max], color='black', linestyle='--')
-    g.savefig(f"{output_path}/{output_name}.png")
+    if interactive:
+        plt.show()
+    else:
+        g.savefig(f"{output_path}/{output_name}.png")
 
 
 class EarlyStopper:

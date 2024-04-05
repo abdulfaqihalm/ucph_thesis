@@ -104,7 +104,7 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     #     logging.info(f"Set benchmark to True for CUDNN")
     #     torch.backends.cudnn.benchmark = True
     
-    early_stopper = EarlyStopper(patience=50, min_delta=0.01)    
+    early_stopper = EarlyStopper(patience=2, min_delta=0.0001)    
     
     for epoch in range(1, epochs+1):    
         model.train()
@@ -177,7 +177,7 @@ if __name__=="__main__":
 
     from wrapper.data_setup import SequenceDataset
     from wrapper.utils import plot_loss_function, plot_correlation, seed_everything
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModel
+    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel
     import sys
 
     # Set logging template
@@ -207,7 +207,7 @@ if __name__=="__main__":
         
     parser.add_argument("--data_folder", help="Train test Data Folder", required=True)
     parser.add_argument("--num_epochs", help="Max number of epochs", required=True)
-    parser.add_argument("--batch_size", help="Number of batch size", default=100, type=int)
+    parser.add_argument("--batch_size", help="Number of batch size", default=128, type=int)
     parser.add_argument("--save_dir", help="Directory for saving outputs", required=True)
     parser.add_argument("--mode", help="Training or testing mode",required=True, 
                         choices=["train","test"])
@@ -253,7 +253,7 @@ if __name__=="__main__":
     logging.info(f"Running on device: {device}")  
     
     # Set seed for everything. Important for reproducibilty see: https://www.kaggle.com/code/bminixhofer/deterministic-neural-networks-using-pytorch
-    seed_everything(445566) # For other model configuration
+    seed_everything(1234) # For other model configuration
     # seed_everything(44) # For model with promoter
     # seed_everything(45) # For m6A_info: flag_channel, add_promoter: True, target: control
     # seed_everything(4455)  # best param 
@@ -303,13 +303,13 @@ if __name__=="__main__":
 
             
             # 0.5MSE if delta<0.1, otherwise delta(|y-y_hat| - 0.5delta)
-            loss_fn = torch.nn.HuberLoss(delta=1)
-            # loss_fn = torch.nn.MSELoss()
+            # loss_fn = torch.nn.HuberLoss(delta=1)
+            loss_fn = torch.nn.MSELoss()
             # [HARD CODED] Input size here is hard coded for the naive model based on the data
             # 1001 means we have 500 down-up-stream nts
             #model = NaiveModelV2() 
             #model = MultiRMModel(num_task=1)
-
+            #'lr': 0.001
             input_size = 1001
             if add_promoter:
                 input_size = 2001
@@ -317,20 +317,18 @@ if __name__=="__main__":
             if m6A_info=="level_channel" or m6A_info=="flag_channel": 
                 input_channel = 5
                 # model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
-                # model = ConvTransformerModel(input_channel=input_channel)
-                # model = MultiRMModel(1, True)
-                model = ConfigurableModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
+                # model = ConfigurableModelWoBatchNorm(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
+                model = TestMotifModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
             else:
                 input_channel = 4
                 # model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
-                # model = ConvTransformerModel(input_channel=input_channel)
-                # model = MultiRMModel(1, True)
-                model = ConfigurableModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=12, cnn_first_kernel_size=9, cnn_length=2, cnn_other_filter=64, cnn_other_kernel_size=3, bilstm_layer=3, bilstm_hidden_size=64, fc_size=256)
+                # model = ConfigurableModelWoBatchNorm(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
+                model = TestMotifModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
 
             model.to(device)
             #model=torch.nn.DataParallel(model) 
             #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate) # here added the weight dacay
-            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.05)
             # optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, eps=adam_epsilon, betas=(beta1,beta2))
             #optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, weight_decay=1e-5) # here added the weight dacay for temp_w_l2reg. for temp no.
             #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=0.1) # here added exponenetial dcay for the optimizer

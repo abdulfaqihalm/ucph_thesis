@@ -15,8 +15,8 @@ class SequenceDataset(Dataset):
         if prom_seq_fasta_path:
             self.prom_seq = utils.create_seq_tensor(prom_seq_fasta_path)
 
-        self.meth_case = (self.meta_data["meth_case"] if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"]*100)
-        self.meth_control = (self.meta_data["meth_control"] if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"]*100)
+        self.meth_case = (self.meta_data["meth_case"]/100 if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"])
+        self.meth_control = (self.meta_data["meth_control"]/100 if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"])
         self.m6A_info = m6A_info
         self.m6A_df = pd.DataFrame([])
 
@@ -71,8 +71,8 @@ class SequenceDatasetDual(Dataset):
     def __init__(self, seq_fasta_path: str, meta_data_path: str,  prom_seq_fasta_path: None|str=None, m6A_info: None|str = "no", m6A_info_path: None|str =None, transform: str="one-hot", path_to_embedding: str|None=None) -> None:
         super().__init__()
         self.meta_data = pd.read_json(meta_data_path)
-        self.meth_case = (self.meta_data["meth_case"] if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"]*100)
-        self.meth_control = (self.meta_data["meth_control"] if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"]*100)
+        self.meth_case = (self.meta_data["meth_case"]/100 if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"])
+        self.meth_control = (self.meta_data["meth_control"]/100 if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"])
         self.transform = transform
         if self.transform == "one-hot":
             self.seq = utils.create_seq_tensor(seq_fasta_path)
@@ -127,8 +127,8 @@ class SequenceDatasetDualGene2Vec(Dataset):
     def __init__(self, file_name: str, dataset: str,  meta_data_path: str,  transform: str="gene2vec") -> None:
         super().__init__()
         self.meta_data = pd.read_json(meta_data_path)
-        self.meth_case = (self.meta_data["meth_case"] if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"]*100)
-        self.meth_control = (self.meta_data["meth_control"] if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"]*100)
+        self.meth_case = (self.meta_data["meth_case"]/100 if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"])
+        self.meth_control = (self.meta_data["meth_control"]/100 if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"])
         self.transform = transform
         self.file_name = file_name
         self.dataset = dataset
@@ -156,46 +156,57 @@ if __name__=="__main__":
     # path_to_prom = None
     path_to_prom = "data/dual_outputs/promoter_fasta_test_SPLIT_1.fasta"
     path_to_meta_data = "data/dual_outputs/train_meta_data_SPLIT_1.json"
-    # path_to_m6A_info = None
-    path_to_m6A_info = "data/single_model/train_control_m6A_flag_data_SPLIT_1.json"
+    path_to_m6A_info = None
+    # path_to_m6A_info = "data/single_model/train_control_m6A_flag_data_SPLIT_1.json"
 
-    # # m6A_info ['flag_channel', 'level_channel', 'add_middle', 'no']
-    # dataset = SequenceDataset(seq_fasta_path=path_to_seq, meta_data_path=path_to_meta_data, prom_seq_fasta_path=path_to_prom, m6A_info="flag_channel", m6A_info_path=path_to_m6A_info)
-    # # dataset = SequenceDataset(seq_fasta_path=path_to_seq, meta_data_path=path_to_meta_data, prom_seq_fasta_path=path_to_prom, m6A_info_path=path_to_m6A_info)
-    # if path_to_m6A_info:
-    #     m6A_info = pd.read_json(path_to_m6A_info)
-    #     print(m6A_info)
-    # data = dataset[2] # AGC....CCTC
-    # print(data['seq'])
-    # print(data['seq'].dtype)
-    # print(data['seq'].shape) #[bs, channel, seq_length]
-    # print(data['seq'][0,500 if path_to_prom else 0 + data['seq'].shape[1]//2])
-    # if data['seq'].shape[0]==5:
-    #     print(data['seq'][4,500 if path_to_prom else 0 + data['seq'].shape[1]//2])
-    # print(data['meth_case'])
+    # m6A_info ['flag_channel', 'level_channel', 'add_middle', 'no']
+    dataset = SequenceDataset(seq_fasta_path=path_to_seq, meta_data_path=path_to_meta_data, prom_seq_fasta_path=None, m6A_info="no", m6A_info_path=None)
+    # dataset = SequenceDataset(seq_fasta_path=path_to_seq, meta_data_path=path_to_meta_data, prom_seq_fasta_path=path_to_prom, m6A_info_path=path_to_m6A_info)
+    if path_to_m6A_info:
+        m6A_info = pd.read_json(path_to_m6A_info)
+        print(m6A_info)
+    print(dataset.meta_data)
+    data = dataset[2] # TTACCAAAAGTACTTTGGAAACTATTCTTAGGCAGATTTACTGTAGACAAATTATTTTTGAAATAATG...NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+    # tensor([[0., 0., 1.,  ..., 0., 0., 0.],
+    #         [0., 0., 0.,  ..., 0., 0., 0.],
+    #         [0., 0., 0.,  ..., 0., 0., 0.],
+    #         [1., 1., 0.,  ..., 0., 0., 0.]])
+    print(data['seq'])
+    from wrapper.utils import one_hot, one_hot_to_sequence
+    print(data['seq'].unsqueeze(0).transpose(2,1).shape)
+    print(data['seq'].unsqueeze(0).transpose(2,1))
+    temp = data['seq'].unsqueeze(0).transpose(2,1).squeeze(0)
+    print(temp)
+    print(one_hot_to_sequence(temp)) # harus 2D
+    print(data['seq'].dtype)
+    print(data['seq'].shape) #[bs, channel, seq_length]
+    print(data['seq'][0,500 if path_to_prom else 0 + data['seq'].shape[1]//2])
+    if data['seq'].shape[0]==5:
+        print(data['seq'][4,500 if path_to_prom else 0 + data['seq'].shape[1]//2])
+    print(data['meth_case'])
     # np.savetxt("promoter_with_m6A_channel.txt", data['seq'][4,].detach().numpy())
 
 
-    path_to_seq = "data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
+    # path_to_seq = "data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
+    # # # path_to_prom = None
+    # # path_to_prom = "data/dual_outputs/promoter_fasta_test_SPLIT_1.fasta"
+    # # path_to_meta_data = "data/dual_outputs/train_meta_data_SPLIT_1.json"
+    # # path_to_embedding = "data/embeddings/gene2vec/double_outputs/split_1.model"
+    # hdf_file = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs/hdf5/gene2vec.hdf5"
     # # path_to_prom = None
     # path_to_prom = "data/dual_outputs/promoter_fasta_test_SPLIT_1.fasta"
     # path_to_meta_data = "data/dual_outputs/train_meta_data_SPLIT_1.json"
-    # path_to_embedding = "data/embeddings/gene2vec/double_outputs/split_1.model"
-    hdf_file = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs/hdf5/gene2vec.hdf5"
-    # path_to_prom = None
-    path_to_prom = "data/dual_outputs/promoter_fasta_test_SPLIT_1.fasta"
-    path_to_meta_data = "data/dual_outputs/train_meta_data_SPLIT_1.json"
-    path_to_embedding = "data/embeddings/gene2vec/dual_outputs/split_1.model"
-    from .utils import create_seq_tensor
-    seq = create_seq_tensor(path_to_seq, 2, "gene2vec", path_to_embedding)
-    print(seq)
-    print(seq.dtype)
-    print(seq.shape)
-    dataset = SequenceDatasetDualGene2Vec(hdf_file, dataset="train/motif_SPLIT_1",  meta_data_path=path_to_meta_data)
-    # print(dataset.seq.shape) # [bs, channel, seq_length] torch.Size([103855, 300, 999])
-    data = dataset[2] # AGC....CCTC
-    print(data['seq'])
-    print(data['seq'].dtype)
-    print(data['seq'].shape) #[300, 999]
-    print(data['meth_case'])
+    # path_to_embedding = "data/embeddings/gene2vec/dual_outputs/split_1.model"
+    # from .utils import create_seq_tensor
+    # seq = create_seq_tensor(path_to_seq, 2, "gene2vec", path_to_embedding)
+    # print(seq)
+    # print(seq.dtype)
+    # print(seq.shape)
+    # dataset = SequenceDatasetDualGene2Vec(hdf_file, dataset="train/motif_SPLIT_1",  meta_data_path=path_to_meta_data)
+    # # print(dataset.seq.shape) # [bs, channel, seq_length] torch.Size([103855, 300, 999])
+    # data = dataset[2] # AGC....CCTC
+    # print(data['seq'])
+    # print(data['seq'].dtype)
+    # print(data['seq'].shape) #[300, 999]
+    # print(data['meth_case'])
     
