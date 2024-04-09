@@ -156,8 +156,8 @@ if __name__=="__main__":
     # path_to_prom = None
     path_to_prom = "data/dual_outputs/promoter_fasta_test_SPLIT_1.fasta"
     path_to_meta_data = "data/dual_outputs/train_meta_data_SPLIT_1.json"
-    path_to_m6A_info = None
-    # path_to_m6A_info = "data/single_model/train_control_m6A_flag_data_SPLIT_1.json"
+    # path_to_m6A_info = None
+    path_to_m6A_info = "data/single_model/train_control_m6A_flag_data_SPLIT_1.json"
 
     # m6A_info ['flag_channel', 'level_channel', 'add_middle', 'no']
     dataset = SequenceDataset(seq_fasta_path=path_to_seq, meta_data_path=path_to_meta_data, prom_seq_fasta_path=None, m6A_info="no", m6A_info_path=None)

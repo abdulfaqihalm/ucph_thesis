@@ -19,13 +19,15 @@ def one_hot(seq: str) -> np.ndarray:
                      "C": [0.0, 1.0, 0.0, 0.0],
                      "G": [0.0, 0.0, 1.0, 0.0],
                      "T": [0.0, 0.0, 0.0, 1.0],
+                     "U": [0.0, 0.0, 0.0, 1.0],
                      "N": [0.0, 0.0, 0.0, 0.0]}
     
     result = []
     for base in seq: 
         if base not in look_up_set:
-            raise ValueError(f"Base {base} is not valid character (ACGTN)")
-        
+            print(f"Base {base} is not valid character (ACGTN)")
+            result.append([0.0, 0.0, 0.0, 0.0])
+            continue
         result.append(look_up_table[base])
     result = np.array(result)
     return result.T
@@ -47,7 +49,7 @@ def one_hot_to_sequence(one_hot_seq: np.ndarray):
     if one_hot_seq.shape[1] != 4:
         raise ValueError(f"Invalid shape: {one_hot_seq.shape}. Need to be [seq_length, 4]")
     
-    look_up_table = {0: "A", 1: "C", 2: "G", 3: "T"}
+    look_up_table = {0: "A", 1: "C", 2: "G", 3: "U"}
     result = []
     for i in range(one_hot_seq.shape[0]):
         base = np.argmax(one_hot_seq[i, :]) # along column of size 4
@@ -154,8 +156,7 @@ def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str="", o
     palette = iter(sns.color_palette(color_palette, 5))
     hist_color = next(palette)
 
-    plt.figure()
-
+    fig = plt.figure()
     g = sns.JointGrid(xlim=(0,max), ylim=(0,max))
     sns.scatterplot(x=y_true, y=y_pred, hue=z, s=6.5, ax=g.ax_joint, palette=color_palette, edgecolor='none', legend=False, alpha=0.3)
     sns.histplot(x=y_true, color=hist_color, edgecolor='none', ax=g.ax_marg_x)
@@ -163,6 +164,7 @@ def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str="", o
     plt.text(0.8*max, 0.02*max, f'r = {corr_coef:.2f}', fontsize=12)
     g.set_axis_labels('True Val', 'Pred Val', fontsize=12)
     g.ax_joint.plot([0, max], [0, max], color='black', linestyle='--')
+    fig.suptitle(title)
     if interactive:
         plt.show()
     else:

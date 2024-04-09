@@ -211,7 +211,7 @@ if __name__=="__main__":
         logging.info(f"Training mode")
         logging.info(f"m6A_info: {args.m6A_info}, args.add_promoter: {args.add_promoter}, embedding: {args.embedding}, target: dual_outputs")
         suffix = f"dual_outputs_m6_info-{args.m6A_info}_promoter-{args.add_promoter}_{args.suffix}"
-        for i in range(1, 2): #5-folds SHOULD BE 6
+        for i in range(1, 6): #5-folds SHOULD BE 6
             logging.info(f"Fold-{i}")
             seq_fasta_train_path = f"{args.data_folder}/motif_fasta_train_SPLIT_{i}.fasta"
             # meta_data_train_json_path = f"{args.data_folder}/train_label_SPLIT_{i}.json"
