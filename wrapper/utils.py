@@ -9,10 +9,14 @@ import os
 from scipy.stats import gaussian_kde
 from .gene2vec_embedding import gene2vec
 from gensim.models import Word2Vec
+from torch.utils import tensorboard
 
 def one_hot(seq: str) -> np.ndarray:
     """
     One-hot encode a sequence
+
+    param: seq: str: sequence to be encoded (ACGTUN)
+    return: np.ndarray: one-hot encoded sequence
     """
     look_up_set = set("ACGTN")
     look_up_table = {"A": [1.0, 0.0, 0.0, 0.0],
@@ -39,10 +43,12 @@ def get_record_by_index(path_to_fasta, target_index):
     else:
         raise IndexError(f"Invalid index: {target_index}")
 
-def one_hot_to_sequence(one_hot_seq: np.ndarray):
+def one_hot_to_sequence(one_hot_seq: np.ndarray) -> str:
     """
     Convert one-hot encoding to sequence
-    Expecting the sahpe of [seq_length, 4]
+    
+    param: one_hot_seq: np.ndarray: Expecting the shape of [seq_length, 4]
+    return: str: sequence
     """
     if torch.is_tensor(one_hot_seq):
         one_hot_seq = one_hot_seq.numpy()
@@ -202,6 +208,45 @@ def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+
+def create_tensorboard_log_writer(experiment_name: str, 
+                  model_name: str, 
+                  log_dir: str,
+                  extra: str=None) -> tensorboard.writer.SummaryWriter():
+    """
+    Creates a torch.utils.tensorboard.writer.SummaryWriter() instance saving to a specific log_dir.
+    log_dir is a combination of runs/timestamp/experiment_name/model_name/extra.
+    Where timestamp is the current date in YYYY-MM-DD format.
+
+    param: experiment_name (str): Name of experiment.
+    param: model_name (str): Name of model.
+    param: log_dir (str): Path to save the logs.
+    param: extra (str, optional): Anything extra to add to the directory. Defaults to None.
+
+    return: torch.utils.tensorboard.writer.SummaryWriter(): Instance of a writer saving to log_dir.
+
+    Example usage:
+        # Create a writer saving to "runs/2022-06-04/data_10_percent/effnetb2/5_epochs/"
+        writer = create_writer(experiment_name="data_10_percent",
+                               model_name="effnetb2",
+                               extra="5_epochs")
+        # The above is the same as:
+        writer = SummaryWriter(log_dir="runs/2022-06-04/data_10_percent/effnetb2/5_epochs/")
+    """
+    from datetime import datetime
+    import os
+
+    # Get timestamp of current date (all experiments on certain day live in same folder)
+    timestamp = datetime.now().strftime("%Y-%m-%d") # returns current date in YYYY-MM-DD format
+
+    if extra:
+        # Create log directory path
+        log_dir = os.path.join(log_dir, "runs", timestamp, experiment_name, model_name, extra)
+    else:
+        log_dir = os.path.join(log_dir, "runs", timestamp, experiment_name, model_name)
+        
+    print(f"[INFO] Created SummaryWriter, saving to: {log_dir}...")
+    return tensorboard.writer.SummaryWriter(log_dir=log_dir)
 
 
 if __name__=="__main__":

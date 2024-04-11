@@ -1,2 +1,4 @@
 batchnorm/
 new_param_wo_batchnorm/
+*.fasta
+*.npz
