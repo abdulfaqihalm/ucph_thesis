@@ -248,6 +248,34 @@ def create_tensorboard_log_writer(experiment_name: str,
     print(f"[INFO] Created SummaryWriter, saving to: {log_dir}...")
     return tensorboard.writer.SummaryWriter(log_dir=log_dir)
 
+def bmc_loss(pred, target, noise_var):
+    """Compute the Balanced MSE Loss (BMC) between `pred` and the ground truth `targets`.
+    Args:
+      pred: A float tensor of size [batch, 1].
+      target: A float tensor of size [batch, 1].
+      noise_var: A float number or tensor.
+    Returns:
+      loss: A float tensor. Balanced MSE Loss.
+    """
+    #print("Calculating BMC loss...")
+    #breakpoint()
+    # print(pred.shape)
+    # print(target.shape)
+    logits = - (pred - target.T).pow(2) / (2 * noise_var)   # logit size: [batch, batch]
+    # print(logits.is_cuda)
+    loss = torch.nn.functional.cross_entropy(logits, torch.arange(pred.shape[0]).cuda())     # contrastive-like loss
+    loss = loss * (2 * noise_var) #.detach()  # optional: restore the loss scale, 'detach' when noise is learnable 
+
+    return loss
+
+class BMCLoss(torch.nn.Module):
+    def __init__(self, init_noise_sigma=1.0):
+        super(BMCLoss, self).__init__()
+        self.noise_sigma = torch.nn.Parameter(torch.tensor(init_noise_sigma))
+
+    def forward(self, pred, target):
+        noise_var = self.noise_sigma ** 2
+        return bmc_loss(pred.unsqueeze(1), target.unsqueeze(1), noise_var)
 
 if __name__=="__main__":
     from time import time

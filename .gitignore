@@ -1,5 +1,6 @@
 foo/
 foo.*
+runs/
 ray_results/
 .DS_Store
 

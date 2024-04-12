@@ -136,13 +136,13 @@ class NaiveModelV2(nn.Module):
     
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model=4, dropout=0.1, max_len=5000):
+    def __init__(self, dim_model=4, dropout=0.1, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
-        pe = torch.zeros(max_len, d_model)
+        pe = torch.zeros(max_len, dim_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(torch.arange(0, dim_model, 2).float() * (-math.log(10000.0) / dim_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
@@ -181,7 +181,7 @@ class ConvTransformerModel(nn.Module):
 
         self.positional_encoding = PositionalEncoding(dropout=dropout_rate)
         # Transformer Encoder layers
-        encoder_layers = nn.TransformerEncoderLayer(d_model=4, nhead=num_heads, dim_feedforward=2048, dropout=dropout_rate)
+        encoder_layers = nn.TransformerEncoderLayer(dim_model=4, nhead=num_heads, dim_feedforward=2048, dropout=dropout_rate)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer=encoder_layers, num_layers=len(transformer_units))
         self.flatten_trans = nn.Flatten()
 
@@ -568,8 +568,122 @@ class ConfigurableModelWoBatchNorm(nn.Module):
         out = out
         return out
     
+class PositionalEncoding(nn.Module):
+    def __init__(self, dim_model=4, max_seq_length=1001):
+        super().__init__()
+        
+        pe = torch.zeros(max_seq_length, dim_model)
+        position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, dim_model, 2).float() * -(math.log(10000.0) / dim_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        self.register_buffer('pe', pe.unsqueeze(0))
+        
+    def forward(self, x: torch.Tensor):
+        """
+        param: x: torch.Tensor: with shape of [bs, seq_length, feature_dim]
+        output: torch.Tensor: with shape of [bs, seq_length, feature_dim] with positional encoding added
+        """
+        return x + self.pe[:, :x.size(1)]
 
 
+class TestMotifModelWithSelfAttention(nn.Module):
+    ## We start with encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=512. Performance only stay around 0.45
+    ## encoder_head=8, num_encoder_layer=6, encoder_dim_feedforward=1024. It seems if the encoder dominate the model can't learn
+    ## the same as above with more dense CNN output (x4) is also not working
+    ## same as first, but with 2048 d_ff. it doesn't work! 
+    ## same as first, but with 6 layesr of num.
+    ## Descent performance with input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=512, 
+    def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=6,
+                 cnn_other_filter=32, cnn_other_kernel_size=6, encoder_head=8, encoder_dim_feedforward=512, num_encoder_layer=3, fc_size=256, output_size=1) -> None:
+        super().__init__()
+        self.CNN = torch.nn.Sequential()
+
+        self.CNN.add_module(f"CNN_{1}", nn.Conv1d(input_channel, cnn_first_filter, kernel_size=cnn_first_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{1}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.1))
+        self.CNN.add_module(f"BATCHNORM_{1}", torch.nn.BatchNorm1d(cnn_first_filter))
+        self.CNN.add_module(f"MAX_POOL_{1}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
+
+        self.CNN.add_module(f"CNN_{2}", nn.Conv1d(cnn_first_filter, cnn_other_filter, kernel_size=cnn_other_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{2}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.2))
+        self.CNN.add_module(f"BATCHNORM_{2}", torch.nn.BatchNorm1d(cnn_other_filter))
+        self.CNN.add_module(f"MAX_POOL_{2}", torch.nn.MaxPool1d(kernel_size=2))
+
+        self.positional_encoding = PositionalEncoding(dim_model=cnn_other_filter, max_seq_length=1001)
+        encoder_layers = torch.nn.TransformerEncoderLayer(d_model=cnn_other_filter, nhead=encoder_head, dim_feedforward=encoder_dim_feedforward, dropout=0.1, batch_first=True)
+        self.transformer_encoder = torch.nn.TransformerEncoder(encoder_layer=encoder_layers, num_layers=num_encoder_layer)
+
+        self.flatten = nn.Flatten()
+
+        self.FC = nn.Sequential(
+            nn.LazyLinear(out_features=fc_size),
+            nn.Dropout(0.2),
+            # based on your final concatenated features size
+            nn.ReLU(),
+            nn.Linear(fc_size, 64),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(64, output_size),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x) -> None:
+        out = self.CNN(x) #[bs feature_dim seq_length]
+        out = self.positional_encoding(out.transpose(1,2)) #[bs, seq_length, feature_dim]
+        out = self.transformer_encoder(out) #[bs, seq_length, feature_dim]
+        out = self.flatten(out) 
+        out = self.FC(out)
+        return out
+
+
+class TestMotifModelWithSelfAttention2(nn.Module):
+    ## We start with encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=512. Performance only stay around 0.45
+    ## encoder_head=8, num_encoder_layer=6, encoder_dim_feedforward=1024. It seems if the encoder dominate the model can't learn
+    ## the same as above with more dense CNN output (x4) is also not working
+    ## same as first, but with 2048 d_ff. it doesn't work! 
+    ## same as first, but with 6 layesr of num.
+    def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=6,
+                 cnn_other_filter=32, cnn_other_kernel_size=6, encoder_head=8, encoder_dim_feedforward=512, num_encoder_layer=3, fc_size=256, output_size=1) -> None:
+        super().__init__()
+        self.CNN = torch.nn.Sequential()
+
+        self.CNN.add_module(f"CNN_{1}", nn.Conv1d(input_channel, cnn_first_filter, kernel_size=cnn_first_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{1}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.1))
+        self.CNN.add_module(f"BATCHNORM_{1}", torch.nn.BatchNorm1d(cnn_first_filter))
+        self.CNN.add_module(f"MAX_POOL_{1}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
+
+        self.CNN.add_module(f"CNN_{2}", nn.Conv1d(cnn_first_filter, cnn_other_filter, kernel_size=cnn_other_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{2}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.2))
+        self.CNN.add_module(f"BATCHNORM_{2}", torch.nn.BatchNorm1d(cnn_other_filter))
+
+        self.positional_encoding = PositionalEncoding(dim_model=cnn_other_filter, max_seq_length=1001)
+        encoder_layers = torch.nn.TransformerEncoderLayer(d_model=cnn_other_filter, nhead=encoder_head, dim_feedforward=encoder_dim_feedforward, dropout=0.1, batch_first=True)
+        self.transformer_encoder = torch.nn.TransformerEncoder(encoder_layer=encoder_layers, num_layers=num_encoder_layer)
+
+        self.flatten = nn.Flatten()
+
+        self.FC = nn.Sequential(
+            nn.LazyLinear(out_features=256),
+            nn.Dropout(0.2),
+            # based on your final concatenated features size
+            nn.ReLU(),
+            nn.Linear(256, output_size),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x) -> None:
+        out = self.CNN(x) #[bs feature_dim seq_length]
+        out = self.positional_encoding(out.transpose(1,2)) #[bs, seq_length, feature_dim]
+        out = self.transformer_encoder(out) #[bs, seq_length, feature_dim]
+        out = self.flatten(out) 
+        out = self.FC(out)
+        return out
 
 class TestMotifModel(nn.Module):
     ## Number of filters of the first CNN layer should not be over parametrized. From a paper 25 is the optimal but we can experiment with lesser number of filter 
@@ -581,6 +695,7 @@ class TestMotifModel(nn.Module):
     ## Concatenating instead hybrid makes .... 
     ## Removing LSTM-like -> with LSTM it is faster to convergence and better performance! without it it barely reaches 0.4!
     ## However it is tradeoff b/w learning local motifs and distributed. Buet we have LSTM!
+    ## The last dense layer is also important. Too complex it will ten to vanish learned freature from CNN adn LSTM. Too simple it will not learn.
     ## Adding Promoter -> 
     def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=6,
                  cnn_other_filter=32, cnn_other_kernel_size=6, bilstm_layer=2, bilstm_hidden_size=128, fc_size=256, output_size=1) -> None:
@@ -640,6 +755,9 @@ class TestMotifModel2(nn.Module):
     ## GRU reduce a little bit performancde 
     ## Concatenating instead hybrid makes .... 
     ## Removing LSTM-like -> with LSTM it is faster to convergence and better performance! without it it barely reaches 0.4!
+    ## However it is tradeoff b/w learning local motifs and distributed. Buet we have LSTM!
+    ## The last dense layer is also important. Too complex it will ten to vanish learned freature from CNN adn LSTM. Too simple it will not learn.
+    ## The first linear layer is the most imporant. Too small output from the first linear will vanish the learned feature from CNN and LSTM
     def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=6,
                  cnn_other_filter=32, cnn_other_kernel_size=6, bilstm_layer=2, bilstm_hidden_size=128, fc_size=256, output_size=1) -> None:
         super().__init__()
@@ -649,50 +767,131 @@ class TestMotifModel2(nn.Module):
         self.CNN.add_module(f"RELU_{1}", torch.nn.ReLU())
         self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.1))
         self.CNN.add_module(f"BATCHNORM_{1}", torch.nn.BatchNorm1d(cnn_first_filter))
-        self.CNN.add_module(f"MAX_POOL_{1}", torch.nn.MaxPool1d(kernel_size=4)) #(Lin-(k-1)-1/k)+1
+        self.CNN.add_module(f"MAX_POOL_{1}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
 
-        self.CNN.add_module(f"CNN_{2}", nn.Conv1d(cnn_first_filter, cnn_other_filter, kernel_size=cnn_other_kernel_size, padding='same'))
+        self.CNN.add_module(f"CNN_{2}", nn.Conv1d(cnn_first_filter, cnn_other_filter*2, kernel_size=cnn_other_kernel_size, padding='same'))
         self.CNN.add_module(f"RELU_{2}", torch.nn.ReLU())
         self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.2))
-        self.CNN.add_module(f"BATCHNORM_{2}", torch.nn.BatchNorm1d(cnn_other_filter))
+        self.CNN.add_module(f"BATCHNORM_{2}", torch.nn.BatchNorm1d(cnn_other_filter*2))
         self.CNN.add_module(f"MAX_POOL_{2}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
 
-        self.CNN.add_module(f"CNN_{2}", nn.Conv1d(cnn_first_filter, cnn_other_filter, kernel_size=cnn_other_kernel_size, padding='same'))
-        self.CNN.add_module(f"RELU_{2}", torch.nn.ReLU())
+        self.CNN.add_module(f"CNN_{3}", nn.Conv1d(cnn_other_filter*2, cnn_other_filter*4, kernel_size=cnn_other_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{3}", torch.nn.ReLU())
         self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.2))
-        self.CNN.add_module(f"BATCHNORM_{2}", torch.nn.BatchNorm1d(cnn_other_filter))
-        self.CNN.add_module(f"MAX_POOL_{2}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
+        self.CNN.add_module(f"BATCHNORM_{3}", torch.nn.BatchNorm1d(cnn_other_filter*4))
+        self.CNN.add_module(f"MAX_POOL_{3}", torch.nn.MaxPool1d(kernel_size=4)) #(Lin-(k-1)-1/k)+1
 
-
-        # self.biLSTM = nn.LSTM(input_size=cnn_other_filter,hidden_size=bilstm_hidden_size,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
-        # self.biGRU = nn.GRU(input_size=1001,hidden_size=bilstm_hidden_size,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
+        self.biLSTM = nn.LSTM(input_size=cnn_other_filter*4,hidden_size=bilstm_hidden_size*2,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
         
         self.flatten = nn.Flatten()
 
         self.FC = nn.Sequential(
-            # nn.Linear(in_features=int(2*bilstm_hidden_size*seq_length),out_features=fc_size),
-            nn.LazyLinear(out_features=fc_size),
+            # nn.Linear(in_features=int(2*bilstm_hidden_size*seq_length),out_features=fc_size
+            nn.LazyLinear(out_features=1032),
             nn.Dropout(0.2),
-            # based on your final concatenated features size
             nn.ReLU(),
-            nn.Linear(fc_size, 32),
+            nn.Linear(1032, 256),
             nn.Dropout(0.1),
             nn.ReLU(),
-            nn.Linear(32, output_size),
+            nn.Linear(256, 64),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(64, output_size),
             nn.Sigmoid()
         )
     
     def forward(self, x) -> None:
         out = self.CNN(x) #[bs feature_dim seq_length]
-        # out = out.permute(0, 2, 1) #[bs seq_length feature_dim]
-        # out, h = self.biLSTM(out) #[bs seq_length feature_dim]
-        # out_gru, h = self.biGRU(x) #[bs seq_length feature_dim]
+        out = out.permute(0, 2, 1) #[bs seq_length feature_dim]
+        out, h = self.biLSTM(out) #[bs seq_length feature_dim]
         out = self.flatten(out) 
-        # out_gru = self.flatten(out_gru)
-        # out = torch.concat(out, out_gru, dim=1)
         out = self.FC(out)
         out = out
         return out
+
+
+class TestMotifModel3(nn.Module):
+    ## Number of filters of the first CNN layer should not be over parametrized. From a paper 25 is the optimal but we can experiment with lesser number of filter 
+    ## Number of maxpooling could affect the way the network learn the motif. Higher number of maxpooling could lead to better motif learning. However, not overparaterize it! 
+    ## Number of kernel size of the first CNN layer 
+    ## However it is tradeoff b/w learning local motifs and distributed. Buet we have LSTM!
+    ## Reduce CNN layers reduce performnce 
+    ## GRU reduce a little bit performancde 
+    ## Concatenating instead hybrid makes .... 
+    ## Removing LSTM-like -> with LSTM it is faster to convergence and better performance! without it it barely reaches 0.4!
+    ## However it is tradeoff b/w learning local motifs and distributed. Buet we have LSTM!
+    ## The last dense layer is also important. Too complex it will ten to vanish learned freature from CNN adn LSTM. Too simple it will not learn.
+    ## The first linear layer is the most imporant. Too small output from the first linear will vanish the learned feature from CNN and LSTM
+    def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=6,
+                 cnn_other_filter=32, cnn_other_kernel_size=6, bilstm_layer=2, bilstm_hidden_size=128, fc_size=256, output_size=1) -> None:
+        super().__init__()
+        self.CNN = torch.nn.Sequential()
+
+        self.CNN.add_module(f"CNN_{1}", nn.Conv1d(input_channel, cnn_first_filter, kernel_size=cnn_first_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{1}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.1))
+        self.CNN.add_module(f"BATCHNORM_{1}", torch.nn.BatchNorm1d(cnn_first_filter))
+        self.CNN.add_module(f"MAX_POOL_{1}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
+
+        self.CNN.add_module(f"CNN_{2}", nn.Conv1d(cnn_first_filter, cnn_other_filter*2, kernel_size=cnn_other_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{2}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.2))
+        self.CNN.add_module(f"BATCHNORM_{2}", torch.nn.BatchNorm1d(cnn_other_filter*2))
+        self.CNN.add_module(f"MAX_POOL_{2}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
+
+        self.CNN.add_module(f"CNN_{3}", nn.Conv1d(cnn_other_filter*2, cnn_other_filter*4, kernel_size=cnn_other_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{3}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.2))
+        self.CNN.add_module(f"BATCHNORM_{3}", torch.nn.BatchNorm1d(cnn_other_filter*4))
+        self.CNN.add_module(f"MAX_POOL_{3}", torch.nn.MaxPool1d(kernel_size=4)) #(Lin-(k-1)-1/k)+1
+
+        self.biLSTM = nn.LSTM(input_size=cnn_other_filter*4,hidden_size=bilstm_hidden_size*2,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
+        
+        self.flatten = nn.Flatten()
+
+        self.FC = nn.Sequential(
+            nn.LazyLinear(out_features=2),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x) -> None:
+        out = self.CNN(x) #[bs feature_dim seq_length]
+        out = out.permute(0, 2, 1) #[bs seq_length feature_dim]
+        out, h = self.biLSTM(out) #[bs seq_length feature_dim]
+        out = self.flatten(out) 
+        out = self.FC(out)
+        out = out
+        return out        
+
+
+class LSTMOnly(nn.Module): # 76 M and mostly attributed to the FC. Not working well
+    def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=6,
+                 cnn_other_filter=32, cnn_other_kernel_size=6, bilstm_layer=2, bilstm_hidden_size=128, fc_size=256, output_size=1) -> None:
+        super().__init__()
+        self.biLSTM = nn.LSTM(input_size=4,hidden_size=150,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
+        
+        self.flatten = nn.Flatten()
+
+        self.FC = nn.Sequential(
+            # nn.Linear(in_features=int(2*bilstm_hidden_size*seq_length),out_features=fc_size
+            nn.LazyLinear(out_features=256),
+            nn.Dropout(0.2),
+            # based on your final concatenated features size
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(64, output_size),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x) -> None:
+        x = x.permute(0, 2, 1) #[bs seq_length feature_dim]
+        out, h = self.biLSTM(x) #[bs seq_length feature_dim]
+        out = self.flatten(out) 
+        out = self.FC(out)
+        out = out
+        return out      
 
 if __name__=="__main__":
     #print(NaiveModelV2(1001))
@@ -724,3 +923,15 @@ if __name__=="__main__":
     # print(lout)
     # lout = (lout + 2*0 - 1*(2-1)-1)/2 + 1
     # print(lout)
+    print("test positional encoding")
+
+    from wrapper.utils import one_hot
+
+    seq = torch.tensor(one_hot("ACGTGGAAA"))
+    seq = seq.unsqueeze(0)
+    print(seq)
+    print(seq.shape)
+    pos = PositionalEncoding()
+    seq_pos_encoded = pos.forward(seq.transpose(1,2))
+    print(seq_pos_encoded)
+    print(seq_pos_encoded.shape)
