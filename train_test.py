@@ -319,11 +319,13 @@ if __name__=="__main__":
                 # model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
                 # model = ConfigurableModelWoBatchNorm(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
                 model = TestMotifModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
+                # model = TestMotifModelWithAttention(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
             else:
                 input_channel = 4
                 # model = NaiveModelV2(input_channel=input_channel, cnn_first_filter=8, input_size=input_size)
                 # model = ConfigurableModelWoBatchNorm(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
-                model = TestMotifModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
+                # model = TestMotifModelWithAttention(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=128, fc_size=64)
+                model = TestMotifModel(input_channel=input_channel, input_size=input_size, cnn_first_filter=16, cnn_first_kernel_size=9, cnn_length=3, cnn_other_filter=32, cnn_other_kernel_size=7, bilstm_layer=3, bilstm_hidden_size=512, fc_size=128)
 
             model.to(device)
             #model=torch.nn.DataParallel(model) 

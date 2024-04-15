@@ -589,6 +589,30 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :x.size(1)]
 
 
+class AttentionOnly(nn.Module):
+    ## NOT WORKING LOLLLLLL NEGATIVE CORR
+    def __init__(self, input_channel=4, encoder_head=8, encoder_dim_feedforward=512, num_encoder_layer=3, output_size=1) -> None:
+        super().__init__()
+        self.CNN = torch.nn.Sequential()
+        self.positional_encoding = PositionalEncoding(dim_model=input_channel, max_seq_length=1001)
+        encoder_layers = torch.nn.TransformerEncoderLayer(d_model=input_channel, nhead=encoder_head, dim_feedforward=encoder_dim_feedforward, dropout=0.1, batch_first=True)
+        self.transformer_encoder = torch.nn.TransformerEncoder(encoder_layer=encoder_layers, num_layers=num_encoder_layer)
+        self.flatten = nn.Flatten()
+
+        self.FC = nn.Sequential(
+            nn.LazyLinear(out_features=output_size),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x) -> None:
+        out = self.CNN(x) #[bs feature_dim seq_length]
+        out = self.positional_encoding(out.transpose(1,2)) #[bs, seq_length, feature_dim]
+        out = self.transformer_encoder(out) #[bs, seq_length, feature_dim]
+        out = self.flatten(out) 
+        out = self.FC(out)
+        return out
+
+
 class TestMotifModelWithSelfAttention(nn.Module):
     ## We start with encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=512. Performance only stay around 0.45
     ## encoder_head=8, num_encoder_layer=6, encoder_dim_feedforward=1024. It seems if the encoder dominate the model can't learn
@@ -745,6 +769,59 @@ class TestMotifModel(nn.Module):
         out = self.FC(out)
         out = out
         return out
+
+class TestMotifModelBranchedEnd(nn.Module):
+    ## This branched end is somehow relatively worse than non-bracnhing version
+    def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=6,
+                 cnn_other_filter=32, cnn_other_kernel_size=6, bilstm_layer=2, bilstm_hidden_size=128, fc_size=256, output_size=1) -> None:
+        super().__init__()
+        self.CNN = torch.nn.Sequential()
+
+        self.CNN.add_module(f"CNN_{1}", nn.Conv1d(input_channel, cnn_first_filter, kernel_size=cnn_first_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{1}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.1))
+        self.CNN.add_module(f"BATCHNORM_{1}", torch.nn.BatchNorm1d(cnn_first_filter))
+        self.CNN.add_module(f"MAX_POOL_{1}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
+
+        self.CNN.add_module(f"CNN_{2}", nn.Conv1d(cnn_first_filter, cnn_other_filter, kernel_size=cnn_other_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{2}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.2))
+        self.CNN.add_module(f"BATCHNORM_{2}", torch.nn.BatchNorm1d(cnn_other_filter))
+        self.CNN.add_module(f"MAX_POOL_{2}", torch.nn.MaxPool1d(kernel_size=2)) #(Lin-(k-1)-1/k)+1
+
+        self.CNN.add_module(f"CNN_{3}", nn.Conv1d(cnn_other_filter, cnn_other_filter, kernel_size=cnn_other_kernel_size, padding='same'))
+        self.CNN.add_module(f"RELU_{3}", torch.nn.ReLU())
+        self.CNN.add_module(f"DROPOUT_{1}", torch.nn.Dropout(0.2))
+        self.CNN.add_module(f"BATCHNORM_{3}", torch.nn.BatchNorm1d(cnn_other_filter))
+        self.CNN.add_module(f"MAX_POOL_{3}", torch.nn.MaxPool1d(kernel_size=4)) #(Lin-(k-1)-1/k)+1
+
+        self.biLSTM = nn.LSTM(input_size=cnn_other_filter,hidden_size=bilstm_hidden_size,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
+        
+        self.flatten = nn.Flatten()
+
+        self.FC = nn.Sequential(
+            # nn.Linear(in_features=int(2*bilstm_hidden_size*seq_length),out_features=fc_size
+            nn.LazyLinear(out_features=fc_size),
+            nn.Dropout(0.2),
+            # based on your final concatenated features size
+            nn.ReLU(),
+            nn.Linear(fc_size, 64),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x) -> None:
+        out = self.CNN(x) #[bs feature_dim seq_length]
+        out = out.permute(0, 2, 1) #[bs seq_length feature_dim]
+        out, h = self.biLSTM(out) #[bs seq_length feature_dim]
+        out = self.flatten(out) 
+        out1 = self.FC(out)
+        out2 = self.FC(out)
+        out = torch.concat([out1, out2], dim=1)
+        return out
+
 
 class TestMotifModel2(nn.Module):
     ## Number of filters of the first CNN layer should not be over parametrized. From a paper 25 is the optimal but we can experiment with lesser number of filter 

@@ -73,6 +73,9 @@ class SequenceDatasetDual(Dataset):
         self.meta_data = pd.read_json(meta_data_path)
         self.meth_case = (self.meta_data["meth_case"]/100 if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"])
         self.meth_control = (self.meta_data["meth_control"]/100 if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"])
+        self.meth_case_weight = utils.calculate_weights(self.meth_case.to_numpy())
+        self.meth_control_weight = utils.calculate_weights(self.meth_control.to_numpy())
+
         self.transform = transform
         if self.transform == "one-hot":
             self.seq = utils.create_seq_tensor(seq_fasta_path)
@@ -120,7 +123,9 @@ class SequenceDatasetDual(Dataset):
         return {
             "seq": seq,
             "meth_case": torch.tensor(self.meth_case.iloc[idx], dtype=torch.float32),
-            "meth_control": torch.tensor(self.meth_control.iloc[idx], dtype=torch.float32)
+            "meth_case_weight": torch.tensor(self.meth_case_weight[idx], dtype=torch.float32),
+            "meth_control": torch.tensor(self.meth_control.iloc[idx], dtype=torch.float32),
+            "meth_control_weight": torch.tensor(self.meth_control_weight[idx], dtype=torch.float32)
         }
 
 class SequenceDatasetDualGene2Vec(Dataset):
@@ -159,7 +164,7 @@ if __name__=="__main__":
     # path_to_m6A_info = None
     path_to_m6A_info = "data/single_model/train_control_m6A_flag_data_SPLIT_1.json"
 
-    # m6A_info ['flag_channel', 'level_channel', 'add_middle', 'no']
+    # m6A_info ["flag_channel", "level_channel", "add_middle", "no"]
     dataset = SequenceDataset(seq_fasta_path=path_to_seq, meta_data_path=path_to_meta_data, prom_seq_fasta_path=None, m6A_info="no", m6A_info_path=None)
     # dataset = SequenceDataset(seq_fasta_path=path_to_seq, meta_data_path=path_to_meta_data, prom_seq_fasta_path=path_to_prom, m6A_info_path=path_to_m6A_info)
     if path_to_m6A_info:
@@ -171,20 +176,20 @@ if __name__=="__main__":
     #         [0., 0., 0.,  ..., 0., 0., 0.],
     #         [0., 0., 0.,  ..., 0., 0., 0.],
     #         [1., 1., 0.,  ..., 0., 0., 0.]])
-    print(data['seq'])
+    print(data["seq"])
     from wrapper.utils import one_hot, one_hot_to_sequence
-    print(data['seq'].unsqueeze(0).transpose(2,1).shape)
-    print(data['seq'].unsqueeze(0).transpose(2,1))
-    temp = data['seq'].unsqueeze(0).transpose(2,1).squeeze(0)
+    print(data["seq"].unsqueeze(0).transpose(2,1).shape)
+    print(data["seq"].unsqueeze(0).transpose(2,1))
+    temp = data["seq"].unsqueeze(0).transpose(2,1).squeeze(0)
     print(temp)
     print(one_hot_to_sequence(temp)) # harus 2D
-    print(data['seq'].dtype)
-    print(data['seq'].shape) #[bs, channel, seq_length]
-    print(data['seq'][0,500 if path_to_prom else 0 + data['seq'].shape[1]//2])
-    if data['seq'].shape[0]==5:
-        print(data['seq'][4,500 if path_to_prom else 0 + data['seq'].shape[1]//2])
-    print(data['meth_case'])
-    # np.savetxt("promoter_with_m6A_channel.txt", data['seq'][4,].detach().numpy())
+    print(data["seq"].dtype)
+    print(data["seq"].shape) #[bs, channel, seq_length]
+    print(data["seq"][0,500 if path_to_prom else 0 + data["seq"].shape[1]//2])
+    if data["seq"].shape[0]==5:
+        print(data["seq"][4,500 if path_to_prom else 0 + data["seq"].shape[1]//2])
+    print(data["meth_case"])
+    # np.savetxt("promoter_with_m6A_channel.txt", data["seq"][4,].detach().numpy())
 
 
     # path_to_seq = "data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
@@ -205,8 +210,8 @@ if __name__=="__main__":
     # dataset = SequenceDatasetDualGene2Vec(hdf_file, dataset="train/motif_SPLIT_1",  meta_data_path=path_to_meta_data)
     # # print(dataset.seq.shape) # [bs, channel, seq_length] torch.Size([103855, 300, 999])
     # data = dataset[2] # AGC....CCTC
-    # print(data['seq'])
-    # print(data['seq'].dtype)
-    # print(data['seq'].shape) #[300, 999]
-    # print(data['meth_case'])
+    # print(data["seq"])
+    # print(data["seq"].dtype)
+    # print(data["seq"].shape) #[300, 999]
+    # print(data["meth_case"])
     

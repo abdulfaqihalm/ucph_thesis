@@ -4,7 +4,7 @@ import logging
 import os
 import csv
 from torchmetrics.wrappers import MultioutputWrapper
-from torchmetrics.regression import PearsonCorrCoef, MeanSquaredError, MeanAbsoluteError
+from torchmetrics.regression import PearsonCorrCoef, MeanSquaredError, MeanAbsoluteError, R2Score
 from wrapper.utils import EarlyStopper
 from tqdm import tqdm
 from wrapper.utils import create_tensorboard_log_writer
@@ -48,23 +48,26 @@ def test(model: torch.nn.Module, test_loader: DataLoader,
         pearson_corr = MultioutputWrapper(PearsonCorrCoef(), 2)
         mse = MultioutputWrapper(MeanSquaredError(), 2)
         mae = MultioutputWrapper(MeanAbsoluteError(), 2)
+        R2 = MultioutputWrapper(R2Score(), 2)
         
         pearson_corr = pearson_corr(pred, true)
         mse = mse(pred, true)
         mae = mae(pred, true)
         rmse = torch.sqrt(mse)
+        R2 = R2(pred, true)
         metrics = {"rmse": rmse.numpy(), 
                    "mse": mse.numpy(),
                    "mae": mae.numpy(),
                    "pearson_corr": pearson_corr.numpy(),
                    "pred": pred.numpy(),
-                   "true": true.numpy()}
+                   "true": true.numpy(),
+                   "R2": R2.numpy()}
     
     return test_loss, metrics    
 
 def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoader, epochs: int,
           loss_fn: torch.nn.Module, save_dir: str, target: None|str = "case", learning_rate: float=1e-3, 
-          device: str="cpu", optimizer: torch.nn.Module|None=None, scheduler: torch.optim.lr_scheduler.LRScheduler|None=None, 
+          device: str="cpu", optimizer: torch.nn.Module|None=None, scheduler: torch.optim.lr_scheduler.LRScheduler|None=None, weighted_loss: bool=True, 
           tensorboard_writer: torch.utils.tensorboard.writer.SummaryWriter|None=None, suffix: str="", **kwargs) -> tuple[torch.nn.Module, dict[str, float]]:
     """
     Train the Model
@@ -83,7 +86,7 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     """
     logging.info(f"==== Start training ====")
     logfile = open(f"{save_dir}/logs/training_{suffix}.log", "w+")
-    logger = csv.DictWriter(logfile, fieldnames=["epoch", "train_loss", "val_control_loss", "val_control_rmse", "val_control_mse", "val_control_mae", "val_control_pearson_corr", "val_case_loss", "val_case_rmse", "val_case_mse", "val_case_mae", "val_case_pearson_corr"])
+    logger = csv.DictWriter(logfile, fieldnames=["epoch", "train_loss", "val_control_loss", "val_control_rmse", "val_control_mse", "val_control_mae", "val_control_pearson_corr", "val_control_R2", "val_case_loss", "val_case_rmse", "val_case_mse", "val_case_mae", "val_case_pearson_corr", "val_case_R2"])
     logger.writeheader()
     
     early_stopper = EarlyStopper(patience=2, min_delta=0.0001)    
@@ -100,9 +103,15 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
             
             model.zero_grad(set_to_none=True) # safer than optimizer.zero_grad()
             meth_pred_val = model(seq)
+            control_weight = data["meth_control_weight"].to(device, non_blocking=True)
+            case_weight = data["meth_case_weight"].to(device, non_blocking=True)
 
-            loss1 = loss_fn(meth_pred_val[:,0], meth_true_val[:,0])
-            loss2 = loss_fn(meth_pred_val[:,1], meth_true_val[:,1])
+            if not weighted_loss:
+                control_weight = torch.ones_like(control_weight)
+                case_weight = torch.ones_like(case_weight)
+
+            loss1 = loss_fn(meth_pred_val[:,0], meth_true_val[:,0], control_weight)
+            loss2 = loss_fn(meth_pred_val[:,1], meth_true_val[:,1], case_weight)
             loss = loss1 + loss2
             loss.backward()
             optimizer.step()
@@ -117,8 +126,8 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
         validation_loss, metrics = test(model=model, test_loader=test_loader, loss_fn=loss_fn, 
                                         target=target, device=device)
 
-        logging.info(f"Epoch: {epoch}, train_loss: {train_loss:.7f}, \n val_loss: {validation_loss:.7f} \n val_control_mse:{metrics['mse'][0].item():.7f}, val_control_rmse: {metrics['rmse'][0].item():.7f}, val_control_mae: {metrics['mae'][0].item():.7f}, val_control_pearson_corr: {metrics['pearson_corr'][0].item():.7f} \n val_case_mse:{metrics['mse'][1].item():.7f}, val_case_rmse: {metrics['rmse'][1].item():.7f}, val_case_mae: {metrics['mae'][1].item():.7f}, val_case_pearson_corr: {metrics['pearson_corr'][1].item():.7f}")
-        logger.writerow({"epoch": epoch, "train_loss": train_loss, "val_control_mse":metrics['mse'][0], "val_control_rmse": metrics['rmse'][0], "val_control_mae": metrics['mae'][0], "val_control_pearson_corr": metrics['pearson_corr'][0],"val_case_mse":metrics['mse'][1], "val_case_rmse": metrics['rmse'][1], "val_case_mae": metrics['mae'][1], "val_case_pearson_corr": metrics['pearson_corr'][1]})
+        logging.info(f"Epoch: {epoch}, train_loss: {train_loss:.7f}, \n val_loss: {validation_loss:.7f} \n val_control_mse:{metrics['mse'][0].item():.7f}, val_control_rmse: {metrics['rmse'][0].item():.7f}, val_control_mae: {metrics['mae'][0].item():.7f}, val_control_pearson_corr: {metrics['pearson_corr'][0].item():.7f}, val_control_R2: {metrics['R2'][0].item():.7f} \n val_case_mse:{metrics['mse'][1].item():.7f}, val_case_rmse: {metrics['rmse'][1].item():.7f}, val_case_mae: {metrics['mae'][1].item():.7f}, val_case_pearson_corr: {metrics['pearson_corr'][1].item():.7f}, val_case_R2: {metrics['R2'][1].item():.7f}")
+        logger.writerow({"epoch": epoch, "train_loss": train_loss, "val_control_mse":metrics['mse'][0], "val_control_rmse": metrics['rmse'][0], "val_control_mae": metrics['mae'][0], "val_control_pearson_corr": metrics['pearson_corr'][0],"val_control_R2":metrics['R2'][0],"val_case_mse":metrics['mse'][1], "val_case_rmse": metrics['rmse'][1], "val_case_mae": metrics['mae'][1], "val_case_pearson_corr": metrics['pearson_corr'][1],"val_case_R2":metrics['R2'][1]})
 
         fold_info = ""
         if kwargs["fold_info"]:
@@ -142,6 +151,12 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
                                global_step=epoch)
             tensorboard_writer.add_scalars(main_tag=f"{fold_info}Pearson_Correlation/Case", 
                                tag_scalar_dict={"val_case_pearson_corr": metrics['pearson_corr'][1].item()}, 
+                               global_step=epoch)
+            tensorboard_writer.add_scalars(main_tag=f"{fold_info}R2/Control", 
+                               tag_scalar_dict={"val_control_pearson_corr": metrics['R2'][0].item()}, 
+                               global_step=epoch)
+            tensorboard_writer.add_scalars(main_tag=f"{fold_info}R2/Case", 
+                               tag_scalar_dict={"val_case_pearson_corr": metrics['R2'][1].item()}, 
                                global_step=epoch)
             tensorboard_writer.close()
         
@@ -174,8 +189,10 @@ if __name__=="__main__":
     from wrapper.data_setup import SequenceDatasetDual, SequenceDatasetDualGene2Vec
     from wrapper.utils import plot_loss_function, plot_correlation, seed_everything, BMCLoss
     from torchinfo import summary
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2
+    import wrapper.weighted_losses as wloss
+    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2, AttentionOnly, TestMotifModelBranchedEnd
     import sys
+    import subprocess
 
     # Set logging template
     logging.basicConfig(format='%(asctime)s::%(levelname)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S', 
@@ -227,9 +244,13 @@ if __name__=="__main__":
     loader_worker = int(args.loader_worker)
 
 
-    device = (torch.device("cuda") if torch.cuda.is_available()
-                else torch.device("cpu"))
-    logging.info(f"Running on device: {device}")  
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        gpu_name = subprocess.check_output(['nvidia-smi', '--query-gpu=gpu_name', '--format=csv']).decode().split('\n')[1]
+        logging.info(f"Running on device: {device} | GPU name: {gpu_name}")  
+    else:
+        device = torch.device("cpu")
+        logging.info(f"Running on device: {device}")  
     
     # Set seed for everything. Important for reproducibilty see: https://www.kaggle.com/code/bminixhofer/deterministic-neural-networks-using-pytorch
     seed_everything(1234)
@@ -237,23 +258,23 @@ if __name__=="__main__":
         logging.info(f"Training mode")
         logging.info(f"m6A_info: {args.m6A_info}, args.add_promoter: {args.add_promoter}, embedding: {args.embedding}, target: dual_outputs")
         suffix = f"dual_outputs_m6A_info-{args.m6A_info}_promoter-{args.add_promoter}_{args.suffix}"
-        for i in range(1, 6): #5-folds SHOULD BE 6
-            logging.info(f"Fold-{i}")
-            seq_fasta_train_path = f"{args.data_folder}/motif_fasta_train_SPLIT_{i}.fasta"
-            # meta_data_train_json_path = f"{args.data_folder}/train_label_SPLIT_{i}.json"
-            meta_data_train_json_path = f"{args.data_folder}/train_meta_data_SPLIT_{i}.json"
+        for fold in range(1, 6): #5-folds SHOULD BE 6
+            logging.info(f"Fold-{fold}")
+            seq_fasta_train_path = f"{args.data_folder}/motif_fasta_train_SPLIT_{fold}.fasta"
+            # meta_data_train_json_path = f"{args.data_folder}/train_label_SPLIT_{fold}.json"
+            meta_data_train_json_path = f"{args.data_folder}/train_meta_data_SPLIT_{fold}.json"
             m6A_info_train_path = None
 
-            seq_fasta_test_path = f"{args.data_folder}/motif_fasta_test_SPLIT_{i}.fasta"
-            # meta_data_test_json_path = f"{args.data_folder}/test_label_SPLIT_{i}.json"
-            meta_data_test_json_path = f"{args.data_folder}/test_meta_data_SPLIT_{i}.json"
+            seq_fasta_test_path = f"{args.data_folder}/motif_fasta_test_SPLIT_{fold}.fasta"
+            # meta_data_test_json_path = f"{args.data_folder}/test_label_SPLIT_{fold}.json"
+            meta_data_test_json_path = f"{args.data_folder}/test_meta_data_SPLIT_{fold}.json"
             m6A_info_test_path = None
 
             promoter_fasta_train_path = None 
             promoter_fasta_test_path = None
             if args.add_promoter:
-                promoter_fasta_train_path = f"{args.data_folder}/promoter_fasta_train_SPLIT_{i}.fasta"
-                promoter_fasta_test_path = f"{args.data_folder}/promoter_fasta_test_SPLIT_{i}.fasta"
+                promoter_fasta_train_path = f"{args.data_folder}/promoter_fasta_train_SPLIT_{fold}.fasta"
+                promoter_fasta_test_path = f"{args.data_folder}/promoter_fasta_test_SPLIT_{fold}.fasta"
 
             # m6A_info ['flag_channel', 'level_channel', 'add_middle', 'no']
             # middle should come from the meta_data
@@ -262,7 +283,7 @@ if __name__=="__main__":
 
             embedding_file = None
             if args.embedding_file:
-                embedding_file = f"{args.embedding_file}/split_{i}.model"
+                embedding_file = f"{args.embedding_file}/split_{fold}.model"
 
             logging.info(f"Loading SequenceDataset")
             train_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_train_path, transform=args.embedding, path_to_embedding=embedding_file)
@@ -289,8 +310,10 @@ if __name__=="__main__":
             
             # 0.5MSE if delta<0.1, otherwise delta(|y-y_hat| - 0.5delta)
             # loss_fn = torch.nn.HuberLoss(delta=1)
-            loss_fn = torch.nn.MSELoss()
+            # loss_fn = torch.nn.MSELoss()
             # loss_fn = BMCLoss()
+            loss_fn = wloss.weighted_mse_loss
+
             dual_outputs = True
             input_size = train_dataset.seq.shape[2]
             logging.info(f"Input size: {input_size}")
@@ -308,9 +331,13 @@ if __name__=="__main__":
                     # model = LSTMOnly(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                     #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                     #             output_size=2)
-                    model = TestMotifModelWithSelfAttention(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                                cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=1024, 
-                                output_size=2)
+                    # model = TestMotifModelWithSelfAttention(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                    #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=1024, 
+                    #             output_size=2)
+                    model = TestMotifModelBranchedEnd(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                                            cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                                            output_size=2)
+                    # model = AttentionOnly(input_channel=5, encoder_head=5, num_encoder_layer=6, encoder_dim_feedforward=2048, output_size=2)
                 else:
                     # model = NaiveModelV2(input_channel=4, cnn_first_filter=8, input_size=input_size, output_dim=2)
                     # model = ConvTransformerModel(input_channel=4)
@@ -321,42 +348,51 @@ if __name__=="__main__":
                     # model = LSTMOnly(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                     #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                     #             output_size=2)
-                    model = TestMotifModelWithSelfAttention(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                                cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=1024, 
-                                output_size=2)
+                    # model = TestMotifModelWithSelfAttention(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                    #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=1024, 
+                    #             output_size=2)
+                    # model = AttentionOnly(input_channel=4, encoder_head=4, num_encoder_layer=6, encoder_dim_feedforward=2048, output_size=2)
+
+                    # model = TestMotifModel(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                    #                         cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                    #                         output_size=2)
+                    model = TestMotifModelBranchedEnd(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                                            cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                                            output_size=2)
+
             if args.embedding=="gene2vec":
                 model = ConfigurableModelWoBatchNorm(input_channel=300, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                             cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                             output_size=2)
             
             tensorboard_writer = create_tensorboard_log_writer(experiment_name=f"{suffix}", model_name=model.__class__.__name__, log_dir=f"{args.save_dir}/tensorboard_logs")
+            
             model.to(device)
             #model=torch.nn.DataParallel(model) 
 
             summary(model, verbose=1, col_width=15, input_size=(args.batch_size, 4, 1001),  col_names=["input_size", "output_size", "num_params",  "params_percent", "trainable"])
             
-            optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(args.adam_beta1, args.adam_beta2), weight_decay=0.1) # here added the weight dacay
-            #optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, weight_decay=1e-5) # here added the weight dacay for temp_w_l2reg. for temp no.
+            optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(args.adam_beta1, args.adam_beta2), weight_decay=0.1) 
             # Train and Validate the model
-            _, pred_true = train(model=model, train_loader=train_loader, test_loader=test_loader, epochs=num_epochs, loss_fn=loss_fn, save_dir=args.save_dir, learning_rate=args.learning_rate, device=device, optimizer=optimizer, tensorboard_writer=tensorboard_writer, suffix=f"{i}th_fold_{suffix}", fold_info=i)
+            _, pred_true = train(model=model, train_loader=train_loader, test_loader=test_loader, epochs=num_epochs, loss_fn=loss_fn, save_dir=args.save_dir, learning_rate=args.learning_rate, device=device, optimizer=optimizer, tensorboard_writer=tensorboard_writer, weighted_loss=False, suffix=f"{fold}th_fold_{suffix}", fold_info=fold)
 
-            model_file = f"{args.save_dir}/models/trained_model_{i}th_fold_{suffix}.pkl"
+            model_file = f"{args.save_dir}/models/trained_model_{fold}th_fold_{suffix}.pkl"
             torch.save(model.state_dict(), model_file)
-            logging.info(f"Model of {i}th fold saved to {model_file}")
+            logging.info(f"Model of {fold}th fold saved to {model_file}")
 
             if args.plot:
-                plot_loss_function(f"{args.save_dir}/logs/training_{i}th_fold_{suffix}.log", f"{args.save_dir}/analysis", f"loss_plot_{i}th_fold_{suffix}")
-                plot_correlation(pred_true["true"][:,0], pred_true["pred"][:,0], f"{args.save_dir}/analysis", f"correlation_plot_{i}th_fold_{suffix}", "CONTROL")
-                plot_correlation(pred_true["true"][:,1], pred_true["pred"][:,1], f"{args.save_dir}/analysis", f"correlation_plot_{i}th_fold_{suffix}", "CASE")
+                plot_loss_function(f"{args.save_dir}/logs/training_{fold}th_fold_{suffix}.log", f"{args.save_dir}/analysis", f"loss_plot_{fold}th_fold_{suffix}")
+                plot_correlation(pred_true["true"][:,0], pred_true["pred"][:,0], f"{args.save_dir}/analysis", f"correlation_plot_{fold}th_fold_{suffix}", "CONTROL")
+                plot_correlation(pred_true["true"][:,1], pred_true["pred"][:,1], f"{args.save_dir}/analysis", f"correlation_plot_{fold}th_fold_{suffix}", "CASE")
 
             save_val = True
             if save_val:
-                with open(f"{args.save_dir}/predictions/validation_{i}th_fold_{suffix}.csv", "w") as f:
+                with open(f"{args.save_dir}/predictions/validation_{fold}th_fold_{suffix}.csv", "w") as f:
                     writer = csv.writer(f) 
                     writer.writerow(["true_control","true_case","pred_control","pred_case"])
                     for true, pred in zip(pred_true["true"], pred_true["pred"]):
                         writer.writerow(list(true) + list(pred))
-            logging.info(f"Finished on Fold-{i}")
+            logging.info(f"Finished on Fold-{fold}")
     else:
         # TODO: Implement testing mode using the pickled model
         logging.info(f"Loading test data ")

@@ -276,6 +276,23 @@ class BMCLoss(torch.nn.Module):
     def forward(self, pred, target):
         noise_var = self.noise_sigma ** 2
         return bmc_loss(pred.unsqueeze(1), target.unsqueeze(1), noise_var)
+    
+def calculate_weights(y_train: np.ndarray, bins=np.arange(0, 1, 0.01)) -> np.ndarray:
+    """
+    Calculate simple weighting from continous-finite data. Code modified from: https://towardsdatascience.com/machine-learning-for-regression-with-imbalanced-data-62629d7ad330
+
+    param: y_train: np.ndarray: target values with shape of [batch_size]
+    param: bins: np.ndarray: bins for the target values 
+    return: np.ndarray: weights  
+    """
+    weights = np.zeros(len(y_train))
+    idx = np.digitize(y_train, bins=bins)
+    for ii in np.unique(idx):
+        cond = idx == ii
+        weights[cond] = 1 / (np.sum(cond) / len(cond))
+    # normalize weights to 1
+    weights /= np.sum(weights)
+    return weights
 
 if __name__=="__main__":
     from time import time
