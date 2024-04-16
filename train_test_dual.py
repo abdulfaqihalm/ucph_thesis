@@ -7,7 +7,7 @@ from torchmetrics.wrappers import MultioutputWrapper
 from torchmetrics.regression import PearsonCorrCoef, MeanSquaredError, MeanAbsoluteError, R2Score
 from wrapper.utils import EarlyStopper
 from tqdm import tqdm
-from wrapper.utils import create_tensorboard_log_writer
+from wrapper.utils import create_tensorboard_log_writer, extract_lstm_info
 
 def test(model: torch.nn.Module, test_loader: DataLoader,
           loss_fn: torch.nn.Module, target: None|str = "case", device: str="cpu") -> tuple[float, dict[str, float]]:
@@ -67,8 +67,8 @@ def test(model: torch.nn.Module, test_loader: DataLoader,
 
 def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoader, epochs: int,
           loss_fn: torch.nn.Module, save_dir: str, target: None|str = "case", learning_rate: float=1e-3, 
-          device: str="cpu", optimizer: torch.nn.Module|None=None, scheduler: torch.optim.lr_scheduler.LRScheduler|None=None, weighted_loss: bool=True, 
-          tensorboard_writer: torch.utils.tensorboard.writer.SummaryWriter|None=None, suffix: str="", **kwargs) -> tuple[torch.nn.Module, dict[str, float]]:
+          device: str="cpu", optimizer: torch.nn.Module|None=None, scheduler: torch.optim.lr_scheduler.LRScheduler|None=None, weighted_loss: bool=False, 
+          tensorboard_writer: torch.utils.tensorboard.writer.SummaryWriter|None=None, patience: int|None=None, suffix: str="", **kwargs) -> tuple[torch.nn.Module, dict[str, float]]:
     """
     Train the Model
 
@@ -89,7 +89,8 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
     logger = csv.DictWriter(logfile, fieldnames=["epoch", "train_loss", "val_control_loss", "val_control_rmse", "val_control_mse", "val_control_mae", "val_control_pearson_corr", "val_control_R2", "val_case_loss", "val_case_rmse", "val_case_mse", "val_case_mae", "val_case_pearson_corr", "val_case_R2"])
     logger.writeheader()
     
-    early_stopper = EarlyStopper(patience=2, min_delta=0.0001)    
+    if patience:
+        early_stopper = EarlyStopper(patience=patience, min_delta=0.0001)    
     
     for epoch in range(1, epochs+1):    
         model.train()
@@ -134,6 +135,16 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
             fold_info = f"{kwargs['fold_info']}/"
 
         if tensorboard_writer:
+            # Logging grads
+            for name, param in model.named_parameters():
+                    tensorboard_writer.add_histogram(
+                        tag=f"{fold_info}run_params/{name}", values=param, global_step=epoch
+                    )
+                    tensorboard_writer.add_histogram(
+                        tag=f"{fold_info}run_grads/{name}", values=param.grad, global_step=epoch
+                    )
+            
+            # Logging performance
             tensorboard_writer.add_scalars(main_tag=f"{fold_info}Loss/Train", 
                                tag_scalar_dict={"train_loss": train_loss}, 
                                global_step=epoch)
@@ -160,10 +171,16 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
                                global_step=epoch)
             tensorboard_writer.close()
         
-        if early_stopper.early_stop(validation_loss):        
-            logging.info(f"Early stop at epoch: {epoch}")     
-            break
-    
+        if patience:
+            if early_stopper.early_stop(validation_loss):        
+                logging.info(f"Early stop at epoch: {epoch}")     
+                break
+
+    plts = extract_lstm_info(model)
+    if plts:
+        for name, plt in plts.items(): 
+            tensorboard_writer.add_figure(f"{fold_info}LSTM Weight/{name}", plt.gcf())
+        tensorboard_writer.close()
     logfile.close()
 
     pred_true = {"pred": metrics["pred"], "true": metrics["true"]}
@@ -186,11 +203,11 @@ if __name__=="__main__":
     """
 
     from argparse import ArgumentParser, ArgumentTypeError
-    from wrapper.data_setup import SequenceDatasetDual, SequenceDatasetDualGene2Vec
+    from wrapper.data_setup import SequenceDatasetDual, SequenceDatasetDualGene2Vec, SequenceDatasetDualFilter, SequenceDatasetDualShortenedFeatures
     from wrapper.utils import plot_loss_function, plot_correlation, seed_everything, BMCLoss
     from torchinfo import summary
     import wrapper.weighted_losses as wloss
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2, AttentionOnly, TestMotifModelBranchedEnd
+    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2, AttentionOnly, TestMotifModelBranchedEnd, TestMotifModelDropoutTest
     import sys
     import subprocess
 
@@ -236,6 +253,9 @@ if __name__=="__main__":
     #parser.add_argument("--m6A_info", type=str2bool, nargs='?', const=True, default=False, help="Include m6A info? [y/n]")
     parser.add_argument("--plot", type=str2bool, nargs='?', const=True, default=False, help="Plot loss or not [y/n]")
     parser.add_argument("--suffix", default="", help="Suffix for output files")
+    parser.add_argument("--patience", help="Number of patience for training", default=2, type=int)
+    parser.add_argument("--weighted_loss", type=str2bool, nargs='?', default=False, help="Weighted Loss[y/n]")
+    parser.add_argument("--tensorboard_writer", type=str2bool, nargs='?', default=True, help="Tensor Board Logging[y/n]")
 
     args = parser.parse_args()
     
@@ -256,9 +276,11 @@ if __name__=="__main__":
     seed_everything(1234)
     if args.mode=="train":
         logging.info(f"Training mode")
-        logging.info(f"m6A_info: {args.m6A_info}, args.add_promoter: {args.add_promoter}, embedding: {args.embedding}, target: dual_outputs")
+        logging.info(f"m6A_info: {args.m6A_info}, add_promoter: {args.add_promoter}, embedding: {args.embedding}, target: dual_outputs")
         suffix = f"dual_outputs_m6A_info-{args.m6A_info}_promoter-{args.add_promoter}_{args.suffix}"
-        for fold in range(1, 6): #5-folds SHOULD BE 6
+
+        folds = [1,2,3,4,5]
+        for fold in folds:
             logging.info(f"Fold-{fold}")
             seq_fasta_train_path = f"{args.data_folder}/motif_fasta_train_SPLIT_{fold}.fasta"
             # meta_data_train_json_path = f"{args.data_folder}/train_label_SPLIT_{fold}.json"
@@ -286,8 +308,8 @@ if __name__=="__main__":
                 embedding_file = f"{args.embedding_file}/split_{fold}.model"
 
             logging.info(f"Loading SequenceDataset")
-            train_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_train_path, transform=args.embedding, path_to_embedding=embedding_file)
-            test_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_test_path, transform=args.embedding, path_to_embedding=embedding_file)
+            train_dataset = SequenceDatasetDualShortenedFeatures(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_train_path, transform=args.embedding, path_to_embedding=embedding_file)
+            test_dataset = SequenceDatasetDualShortenedFeatures(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_test_path, transform=args.embedding, path_to_embedding=embedding_file)
 
             # USE BIG WORKER FOR THIS i.e. 10 worker for loader
             # path_to_seq = "data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
@@ -334,9 +356,9 @@ if __name__=="__main__":
                     # model = TestMotifModelWithSelfAttention(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                     #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=1024, 
                     #             output_size=2)
-                    model = TestMotifModelBranchedEnd(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                                            cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
-                                            output_size=2)
+                    model = TestMotifModelBranchedEnd(input_channel=5, input_size=input_size, cnn_first_filter=config["cnn_first_filter"], 
+                                                      cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                                                      cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],output_size=2)
                     # model = AttentionOnly(input_channel=5, encoder_head=5, num_encoder_layer=6, encoder_dim_feedforward=2048, output_size=2)
                 else:
                     # model = NaiveModelV2(input_channel=4, cnn_first_filter=8, input_size=input_size, output_dim=2)
@@ -356,7 +378,7 @@ if __name__=="__main__":
                     # model = TestMotifModel(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                     #                         cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                     #                         output_size=2)
-                    model = TestMotifModelBranchedEnd(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                    model = TestMotifModel(input_channel=4, input_size=input_size, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                                             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                                             output_size=2)
 
@@ -365,16 +387,20 @@ if __name__=="__main__":
                             cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                             output_size=2)
             
-            tensorboard_writer = create_tensorboard_log_writer(experiment_name=f"{suffix}", model_name=model.__class__.__name__, log_dir=f"{args.save_dir}/tensorboard_logs")
+            tensorboard_writer = None 
+            if args.tensorboard_writer:
+                tensorboard_writer = create_tensorboard_log_writer(experiment_name=f"{suffix}", model_name=model.__class__.__name__, log_dir=f"{args.save_dir}/tensorboard_logs")
             
             model.to(device)
             #model=torch.nn.DataParallel(model) 
 
-            summary(model, verbose=1, col_width=15, input_size=(args.batch_size, 4, 1001),  col_names=["input_size", "output_size", "num_params",  "params_percent", "trainable"])
+            if fold == folds[0]:
+                # Print summary on the first fold
+                summary(model, verbose=1, col_width=15, input_size=(args.batch_size, 4, input_size),  col_names=["input_size", "output_size", "num_params",  "params_percent", "trainable"])
             
             optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(args.adam_beta1, args.adam_beta2), weight_decay=0.1) 
             # Train and Validate the model
-            _, pred_true = train(model=model, train_loader=train_loader, test_loader=test_loader, epochs=num_epochs, loss_fn=loss_fn, save_dir=args.save_dir, learning_rate=args.learning_rate, device=device, optimizer=optimizer, tensorboard_writer=tensorboard_writer, weighted_loss=False, suffix=f"{fold}th_fold_{suffix}", fold_info=fold)
+            _, pred_true = train(model=model, train_loader=train_loader, test_loader=test_loader, epochs=num_epochs, loss_fn=loss_fn, save_dir=args.save_dir, learning_rate=args.learning_rate, device=device, optimizer=optimizer, tensorboard_writer=tensorboard_writer, weighted_loss=args.weighted_loss, patience=args.patience, suffix=f"{fold}th_fold_{suffix}", fold_info=fold)
 
             model_file = f"{args.save_dir}/models/trained_model_{fold}th_fold_{suffix}.pkl"
             torch.save(model.state_dict(), model_file)

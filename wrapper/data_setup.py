@@ -127,6 +127,82 @@ class SequenceDatasetDual(Dataset):
             "meth_control": torch.tensor(self.meth_control.iloc[idx], dtype=torch.float32),
             "meth_control_weight": torch.tensor(self.meth_control_weight[idx], dtype=torch.float32)
         }
+    
+
+
+
+
+
+class SequenceDatasetDualFilter(Dataset):
+    def __init__(self, seq_fasta_path: str, meta_data_path: str,  prom_seq_fasta_path: None|str=None, m6A_info: None|str = "no", m6A_info_path: None|str =None, transform: str="one-hot", path_to_embedding: str|None=None) -> None:
+        super().__init__()
+        self.meta_data = pd.read_json(meta_data_path)
+
+        # Additional filter
+        filter_series = ((self.meta_data["meth_case"] >=0.15) & (self.meta_data["meth_case"] <=0.40) | (self.meta_data["meth_case"] >=0.95) & (self.meta_data["meth_case"] <=1.0)) & ((self.meta_data["meth_control"] >=0.15) & (self.meta_data["meth_control"] <=0.40) | (self.meta_data["meth_control"] >=0.95) & (self.meta_data["meth_control"] <=1.0))
+        self.meta_data = self.meta_data[filter_series]
+
+        self.meth_case = (self.meta_data["meth_case"]/100 if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"])
+        self.meth_control = (self.meta_data["meth_control"]/100 if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"])
+        self.meth_case_weight = utils.calculate_weights(self.meth_case.to_numpy())
+        self.meth_control_weight = utils.calculate_weights(self.meth_control.to_numpy())
+
+        self.transform = transform
+        if self.transform == "one-hot":
+            self.seq = utils.create_seq_tensor(seq_fasta_path)
+            self.seq = self.seq[filter_series]
+            
+    
+    def __len__(self) -> int:
+        return len(self.meta_data)
+    
+    def __getitem__(self, idx) -> dict[str, any]:
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        seq = self.seq[idx]
+        
+        return {
+            "seq": seq,
+            "meth_case": torch.tensor(self.meth_case.iloc[idx], dtype=torch.float32),
+            "meth_case_weight": torch.tensor(self.meth_case_weight[idx], dtype=torch.float32),
+            "meth_control": torch.tensor(self.meth_control.iloc[idx], dtype=torch.float32),
+            "meth_control_weight": torch.tensor(self.meth_control_weight[idx], dtype=torch.float32)
+        }
+
+
+class SequenceDatasetDualShortenedFeatures(Dataset):
+    def __init__(self, seq_fasta_path: str, meta_data_path: str,  prom_seq_fasta_path: None|str=None, m6A_info: None|str = "no", m6A_info_path: None|str =None, transform: str="one-hot", path_to_embedding: str|None=None) -> None:
+        super().__init__()
+        self.meta_data = pd.read_json(meta_data_path)
+        self.meth_case = (self.meta_data["meth_case"]/100 if self.meta_data["meth_case"].max() > 1 else self.meta_data["meth_case"])
+        self.meth_control = (self.meta_data["meth_control"]/100 if self.meta_data["meth_control"].max() > 1 else self.meta_data["meth_control"])
+        self.meth_case_weight = utils.calculate_weights(self.meth_case.to_numpy())
+        self.meth_control_weight = utils.calculate_weights(self.meth_control.to_numpy())
+
+        self.transform = transform
+        if self.transform == "one-hot":
+            self.seq = utils.create_seq_tensor(seq_fasta_path)
+            self.seq = self.seq[:, :, 251:752]
+            
+    
+    def __len__(self) -> int:
+        return len(self.meta_data)
+    
+    def __getitem__(self, idx) -> dict[str, any]:
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        seq = self.seq[idx]
+        
+        return {
+            "seq": seq,
+            "meth_case": torch.tensor(self.meth_case.iloc[idx], dtype=torch.float32),
+            "meth_case_weight": torch.tensor(self.meth_case_weight[idx], dtype=torch.float32),
+            "meth_control": torch.tensor(self.meth_control.iloc[idx], dtype=torch.float32),
+            "meth_control_weight": torch.tensor(self.meth_control_weight[idx], dtype=torch.float32)
+        }
+
 
 class SequenceDatasetDualGene2Vec(Dataset):
     def __init__(self, file_name: str, dataset: str,  meta_data_path: str,  transform: str="gene2vec") -> None:

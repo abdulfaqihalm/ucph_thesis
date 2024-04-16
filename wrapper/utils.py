@@ -8,8 +8,10 @@ import random
 import os
 from scipy.stats import gaussian_kde
 from .gene2vec_embedding import gene2vec
+from sklearn.metrics import r2_score 
 from gensim.models import Word2Vec
 from torch.utils import tensorboard
+import re
 
 def one_hot(seq: str) -> np.ndarray:
     """
@@ -134,6 +136,7 @@ def plot_loss_function(result_path:str, output_path:str, output_name:str) -> Non
 
 
 def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str="", output_name:str="", title="", interactive=False) -> None:
+
     """
     Plot correlation
 
@@ -158,19 +161,22 @@ def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str="", o
     xy = np.vstack([y_true, y_pred])
     z = gaussian_kde(xy)(xy)
     corr_coef = np.corrcoef(y_true, y_pred)[0, 1]
+    R2_score = r2_score(y_true, y_pred)
     color_palette = "rocket"
     palette = iter(sns.color_palette(color_palette, 5))
     hist_color = next(palette)
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(8, 6))
+    fig.subplots_adjust(top=0.85)
     g = sns.JointGrid(xlim=(0,max), ylim=(0,max))
     sns.scatterplot(x=y_true, y=y_pred, hue=z, s=6.5, ax=g.ax_joint, palette=color_palette, edgecolor='none', legend=False, alpha=0.3)
     sns.histplot(x=y_true, color=hist_color, edgecolor='none', ax=g.ax_marg_x)
     sns.histplot(y=y_pred, color=hist_color, edgecolor='none', ax=g.ax_marg_y)
-    plt.text(0.8*max, 0.02*max, f'r = {corr_coef:.2f}', fontsize=12)
+    plt.text(0.8*max + 0.07*max, 0.02*max - 0.05, f'r = {corr_coef:.2f}', fontsize=11)
+    plt.text(0.8*max + 0.07*max, 0.02*max - 0.1, f'R2 = {R2_score:.2f}', fontsize=11)
     g.set_axis_labels('True Val', 'Pred Val', fontsize=12)
     g.ax_joint.plot([0, max], [0, max], color='black', linestyle='--')
-    fig.suptitle(title)
+    g.figure.suptitle(title)
     if interactive:
         plt.show()
     else:
@@ -294,6 +300,81 @@ def calculate_weights(y_train: np.ndarray, bins=np.arange(0, 1, 0.01)) -> np.nda
     weights /= np.sum(weights)
     return weights
 
+
+import re
+import numpy as np 
+import torch
+from matplotlib import pyplot as plt 
+import pandas as pd
+import seaborn as sns
+def lstm_plot(lstm_param, hidden_size, is_reverse=False, interactive=False):
+    is_reverse = "_reverse" if is_reverse else ""
+    weight_data = lstm_param[f"kernel_weight{is_reverse}"].T
+    fig, axs = plt.subplots(2, 1, gridspec_kw={'height_ratios': [8, 1]}, figsize=(10, 5))
+    fig.tight_layout()
+    # sns.set(font_scale=1)
+    # weights
+    ax = sns.heatmap(ax=axs[0], data=weight_data, cmap="PiYG")
+    for i in range(0, weight_data.shape[1], hidden_size):
+        if i!=0:
+            ax.vlines(i, ymin=0, ymax=weight_data.shape[0], colors='black', linewidth=1)
+    ax.set_xticks(range(0, weight_data.shape[1],25), range(0, weight_data.shape[1],25))
+    ax.set_title(f"Kernel Weight{is_reverse}", weight='bold', size=8)
+    ax.set_xlabel("Input  |  Forget  |  Gate  |  Output")
+    ax.set_ylabel("Input Units")
+    # bias
+    bias_data = lstm_param[f"kernel_bias{is_reverse}"].unsqueeze(0)
+    ax = sns.heatmap(ax=axs[1], data=bias_data, cmap="PiYG", cbar=False, yticklabels=False, xticklabels=8)
+    for i in range(0, bias_data.shape[1], hidden_size):
+        if i!=0:
+            ax.vlines(i, ymin=0, ymax=bias_data.shape[0], colors='black', linewidth=1)
+    ax.set_title(f"Kernel Bias{is_reverse}", weight='bold', size=8)
+    ax.set_xlabel("Input  |  Forget  |  Gate  |  Output")
+    ax.set_xticks(range(0, bias_data.shape[1],25), range(0, bias_data.shape[1],25))
+    plt.subplots_adjust(hspace=0.5)
+    if interactive:
+        plt.show()
+    else:
+        return plt
+
+def extract_lstm_info(model):
+    lstm = None
+    lstm_param  = {}
+    is_bidirection = False
+    plts = {}
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.LSTM):
+            lstm = module 
+            lstm_layer = lstm.num_layers
+            is_bidirection = lstm.bidirectional
+            for param in lstm.named_parameters():
+                layer = int((re.search(r"l\d+", param[0])).group()[-1])
+                h_stat = re.search(r"[i,h]h", param[0]).group()[0]
+                if layer == 0:
+                    # print(f"Param name: {param[0]} with shape of: {param[1].shape}")
+                    if str(param[0]) == "weight_ih_l0":
+                        lstm_param["kernel_weight"] = param[1].detach().cpu()
+                    if str(param[0]) == "weight_hh_l0":
+                        lstm_param["recurrent_weight"] = param[1].detach().cpu()
+                    if str(param[0]) == "bias_ih_l0":
+                        lstm_param["kernel_bias"] = param[1].detach().cpu()
+                    if str(param[0]) == "bias_hh_l0":
+                        lstm_param["recurrent_bias"] = param[1].detach().cpu()
+                    if str(param[0]) == "weight_ih_l0_reverse":
+                        lstm_param["kernel_weight_reverse"] = param[1].detach().cpu()
+                    if str(param[0]) == "weight_hh_l0_reverse":
+                        lstm_param["recurrent_weight_reverse"] = param[1].detach().cpu()
+                    if str(param[0]) == "bias_ih_l0_reverse":
+                        lstm_param["kernel_bias_reverse"] = param[1].detach().cpu()
+                    if str(param[0]) == "bias_hh_l0_reverse":
+                        lstm_param["recurrent_bias_reverse"] = param[1].detach().cpu()
+    
+    plts["forward_direction"] = lstm_plot(lstm_param,  lstm.hidden_size)
+    if is_bidirection:
+        plts["backward_direction"] = lstm_plot(lstm_param, lstm.hidden_size, is_reverse=True)
+    return plts
+                      
+                        
 if __name__=="__main__":
     from time import time
     path_to_fasta = "/binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
