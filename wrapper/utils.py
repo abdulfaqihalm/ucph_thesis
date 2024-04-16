@@ -300,14 +300,17 @@ def calculate_weights(y_train: np.ndarray, bins=np.arange(0, 1, 0.01)) -> np.nda
     weights /= np.sum(weights)
     return weights
 
-
-import re
-import numpy as np 
-import torch
-from matplotlib import pyplot as plt 
-import pandas as pd
-import seaborn as sns
 def lstm_plot(lstm_param, hidden_size, is_reverse=False, interactive=False):
+    """
+    Plot lstm weights and bias in heatmaps
+
+    param: lstm_param: dict: lstm parameters
+    param: hidden_size: int: hidden size of the lstm
+    param: is_reverse: bool: whether the lstm is reverse
+    param: interactive: bool: whether to show the plot interactively
+
+    return: None or plt
+    """
     is_reverse = "_reverse" if is_reverse else ""
     weight_data = lstm_param[f"kernel_weight{is_reverse}"].T
     fig, axs = plt.subplots(2, 1, gridspec_kw={'height_ratios': [8, 1]}, figsize=(10, 5))
@@ -337,7 +340,13 @@ def lstm_plot(lstm_param, hidden_size, is_reverse=False, interactive=False):
     else:
         return plt
 
-def extract_lstm_info(model):
+def extract_lstm_info(model: torch.nn.Module):
+    """
+    Extract LSTM information from the model
+
+    param: model: torch.nn.Module: model
+    return: dictionary of plots
+    """
     lstm = None
     lstm_param  = {}
     is_bidirection = False
