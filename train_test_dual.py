@@ -131,7 +131,7 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
         logger.writerow({"epoch": epoch, "train_loss": train_loss, "val_control_mse":metrics['mse'][0], "val_control_rmse": metrics['rmse'][0], "val_control_mae": metrics['mae'][0], "val_control_pearson_corr": metrics['pearson_corr'][0],"val_control_R2":metrics['R2'][0],"val_case_mse":metrics['mse'][1], "val_case_rmse": metrics['rmse'][1], "val_case_mae": metrics['mae'][1], "val_case_pearson_corr": metrics['pearson_corr'][1],"val_case_R2":metrics['R2'][1]})
 
         fold_info = ""
-        if kwargs["fold_info"]:
+        if "fold_info" in kwargs:
             fold_info = f"{kwargs['fold_info']}/"
 
         if tensorboard_writer:
@@ -175,7 +175,13 @@ def train(model: torch.nn.Module, train_loader: DataLoader, test_loader: DataLoa
             if early_stopper.early_stop(validation_loss):        
                 logging.info(f"Early stop at epoch: {epoch}")     
                 break
+    
+    # Logging hyperparameters for first fold
+    if tensorboard_writer and ("config" in kwargs) and fold==1:
+        tensorboard_writer.add_hparams(hparam_dict=kwargs["config"], metric_dict={"val_control_mse": metrics['mse'][0].item(), "val_case_mse": metrics['mse'][1].item(), "val_control_pearson_corr": metrics['pearson_corr'][0].item(), "val_case_pearson_corr": metrics['pearson_corr'][1].item(), "val_control_R2": metrics['R2'][0].item(), "val_case_R2": metrics['R2'][1].item()}, run_name=f"{fold_info}hparam")
+    tensorboard_writer.close()
 
+    # Logging LSTM weights and bias heatmap
     plts = extract_lstm_info(model)
     if plts:
         for name, plt in plts.items(): 
@@ -340,7 +346,7 @@ if __name__=="__main__":
             input_size = train_dataset.seq.shape[2]
             logging.info(f"Input size: {input_size}")
             # lr = 0.01
-            config = {'cnn_first_filter': 16, 'cnn_first_kernel_size': 9, 'cnn_length': 3, 'cnn_filter': 32, 'cnn_kernel_size': 7, 'bilstm_layer': 3, 'bilstm_hidden_size': 128, 'fc_size': 64}
+            config = {'cnn_first_filter': 16, 'cnn_first_kernel_size': 9, 'cnn_length': 3, 'cnn_filter': 32, 'cnn_kernel_size': 7, 'bilstm_layer': 3, 'bilstm_hidden_size': 128, 'fc_size': 64, 'lr': args.learning_rate, 'batch_size': args.batch_size, 'patience': args.patience, 'weighted_loss': args.weighted_loss}
             
             if args.embedding=="one-hot":
                 if args.m6A_info=="level_channel" or args.m6A_info=="flag_channel": 
@@ -400,7 +406,7 @@ if __name__=="__main__":
             
             optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(args.adam_beta1, args.adam_beta2), weight_decay=0.1) 
             # Train and Validate the model
-            _, pred_true = train(model=model, train_loader=train_loader, test_loader=test_loader, epochs=num_epochs, loss_fn=loss_fn, save_dir=args.save_dir, learning_rate=args.learning_rate, device=device, optimizer=optimizer, tensorboard_writer=tensorboard_writer, weighted_loss=args.weighted_loss, patience=args.patience, suffix=f"{fold}th_fold_{suffix}", fold_info=fold)
+            _, pred_true = train(model=model, train_loader=train_loader, test_loader=test_loader, epochs=num_epochs, loss_fn=loss_fn, save_dir=args.save_dir, learning_rate=args.learning_rate, device=device, optimizer=optimizer, tensorboard_writer=tensorboard_writer, weighted_loss=args.weighted_loss, patience=args.patience, suffix=f"{fold}th_fold_{suffix}", fold_info=fold, config=config)
 
             model_file = f"{args.save_dir}/models/trained_model_{fold}th_fold_{suffix}.pkl"
             torch.save(model.state_dict(), model_file)
