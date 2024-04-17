@@ -12,6 +12,7 @@ from sklearn.metrics import r2_score
 from gensim.models import Word2Vec
 from torch.utils import tensorboard
 import re
+import copy
 
 def one_hot(seq: str) -> np.ndarray:
     """
@@ -182,6 +183,19 @@ def plot_correlation(y_true:np.ndarray, y_pred:np.ndarray, output_path:str="", o
     else:
         g.savefig(f"{output_path}/{output_name}.png")
 
+def initialize_kaiming_weights(model: torch.nn.Module):
+    """
+    Initialize all the weight of the conv1d and linear as in https://paperswithcode.com/method/he-initialization
+
+    param: model: torch.nn.Module: model
+    """
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv1d, torch.nn.Linear)):
+            # print(module)
+            torch.nn.init.kaiming_normal_(module.weight, nonlinearity='relu')
+            if module.bias is not None:
+                # print("Module has bias")
+                torch.nn.init.zeros_(module.bias)
 
 class EarlyStopper:
     def __init__(self, patience:int = 5, min_delta:float = 0.05) -> None:

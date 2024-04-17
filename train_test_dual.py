@@ -209,11 +209,11 @@ if __name__=="__main__":
     """
 
     from argparse import ArgumentParser, ArgumentTypeError
-    from wrapper.data_setup import SequenceDatasetDual, SequenceDatasetDualGene2Vec, SequenceDatasetDualFilter, SequenceDatasetDualShortenedFeatures
-    from wrapper.utils import plot_loss_function, plot_correlation, seed_everything, BMCLoss
+    from wrapper.data_setup import SequenceDatasetDual, SequenceDatasetDualGene2Vec, SequenceDatasetDualFilter, SequenceDatasetDual
+    from wrapper.utils import plot_loss_function, plot_correlation, seed_everything, initialize_kaiming_weights, BMCLoss
     from torchinfo import summary
     import wrapper.weighted_losses as wloss
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2, AttentionOnly, TestMotifModelBranchedEnd, TestMotifModelDropoutTest
+    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2, AttentionOnly, TestMotifModelBranchedEnd, TestMotifModelDropoutTest, ResNet1D
     import sys
     import subprocess
 
@@ -262,6 +262,7 @@ if __name__=="__main__":
     parser.add_argument("--patience", help="Number of patience for training", default=2, type=int)
     parser.add_argument("--weighted_loss", type=str2bool, nargs='?', default=False, help="Weighted Loss[y/n]")
     parser.add_argument("--tensorboard_writer", type=str2bool, nargs='?', default=True, help="Tensor Board Logging[y/n]")
+    parser.add_argument("--kaiming_init", type=str2bool, nargs='?', default=False, help="Initialize Linear Layer and Conv1D with Kaiming Normal[y/n]")
 
     args = parser.parse_args()
     
@@ -314,8 +315,8 @@ if __name__=="__main__":
                 embedding_file = f"{args.embedding_file}/split_{fold}.model"
 
             logging.info(f"Loading SequenceDataset")
-            train_dataset = SequenceDatasetDualShortenedFeatures(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_train_path, transform=args.embedding, path_to_embedding=embedding_file)
-            test_dataset = SequenceDatasetDualShortenedFeatures(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_test_path, transform=args.embedding, path_to_embedding=embedding_file)
+            train_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_train_path, meta_data_path=meta_data_train_json_path, prom_seq_fasta_path=promoter_fasta_train_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_train_path, transform=args.embedding, path_to_embedding=embedding_file)
+            test_dataset = SequenceDatasetDual(seq_fasta_path=seq_fasta_test_path, prom_seq_fasta_path=promoter_fasta_test_path,  meta_data_path=meta_data_test_json_path, m6A_info=args.m6A_info, m6A_info_path=m6A_info_test_path, transform=args.embedding, path_to_embedding=embedding_file)
 
             # USE BIG WORKER FOR THIS i.e. 10 worker for loader
             # path_to_seq = "data/dual_outputs/motif_fasta_train_SPLIT_1.fasta"
@@ -345,7 +346,7 @@ if __name__=="__main__":
             dual_outputs = True
             input_size = train_dataset.seq.shape[2]
             logging.info(f"Input size: {input_size}")
-            # lr = 0.01
+
             config = {'cnn_first_filter': 16, 'cnn_first_kernel_size': 9, 'cnn_length': 3, 'cnn_filter': 32, 'cnn_kernel_size': 7, 'bilstm_layer': 3, 'bilstm_hidden_size': 128, 'fc_size': 64, 'lr': args.learning_rate, 'batch_size': args.batch_size, 'patience': args.patience, 'weighted_loss': args.weighted_loss}
             
             if args.embedding=="one-hot":
@@ -384,14 +385,22 @@ if __name__=="__main__":
                     # model = TestMotifModel(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                     #                         cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                     #                         output_size=2)
-                    model = TestMotifModel(input_channel=4, input_size=input_size, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                                            cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
-                                            output_size=2)
+                    # model = TestMotifModel(input_channel=4, input_size=input_size, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
+                    #                         cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                    #                         output_size=2)
+                    model = ResNet1D(in_channels=4, base_filters=128, groups=32, kernel_size=8, stride=3, n_block=30, n_classes=2, downsample_gap=6, increasefilter_gap=12)
 
             if args.embedding=="gene2vec":
                 model = ConfigurableModelWoBatchNorm(input_channel=300, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                             cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                             output_size=2)
+                
+            # Init model with kaiming normal    
+            if args.kaiming_init:
+                # Call forward with dummy input
+                logging.info("Initialize kaiming weights")
+                model(torch.randn(args.batch_size, 4, input_size))
+                initialize_kaiming_weights(model)
             
             tensorboard_writer = None 
             if args.tensorboard_writer:
