@@ -15,6 +15,16 @@ library(Biostrings)
 library(reticulate)
 np <- import("numpy")
 library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(patchwork)  # Ensure this library is loaded for inset_element
+library(ggrepel)
+library(latex2exp)
+library(ggseqlogo)
+library(parallel)
+library(doMC)
+library(foreach)
 ```
 
 ## Including Plots
@@ -76,8 +86,7 @@ length(unlist(motList))
 
 
 ```{r}
-library(ggplot2)
-library(ggseqlogo)
+
 
 for (fold in c(1:5)){
   mat_matrix = list()
@@ -129,13 +138,22 @@ seqs_test <- c(seq_test_list[[1]],seq_test_list[[2]],seq_test_list[[3]],seq_test
 
 ```{r}
 valid_data_list
+
+start_slice <- 250
+end_slice <- 750
 ```
 
 ```{r}
 scan_list = list()
 motif_vector_list = list()
 for (fold in 1:5){
-  scan <-universalmotif::scan_sequences(motList[[fold]],subseq(seq_test_list[[fold]],start = 250,end = 750))
+  # Resulted in overlap motif
+  # if using enrich_motifs, not entirched!
+  # by default it uses p-value as the threshold. It will use dynamic pvalue which uses default bkg
+  scan <-universalmotif::scan_sequences(motList[[fold]],subseq(seq_test_list[[fold]],start = start_slice,end = end_slice),
+                                        nthreads=4)
+  # to check the enrichment motif with the same params: enrich_motifs(motList[[fold]],subseq(seq_test_list[[fold]],start = start_slice,end = end_slice), nthreads=4, RC = FALSE, no.overlaps=FALSE)
+  # the enrichment motif will use the fisher vector of contingency b/w seqList and background by [[num_hits, num_non_hits],[bkg_num_hits, bkg_num_non_hits]] -> H0 there is no relation between hits and experimental (non-background). Actually we could use it to filter further what kind of motifs which we can look at (as.tibble(enrich_coba) |> dplyr::arrange(desc(target.hits)))
   scan_list[[fold]] <- scan
   scan <- as.tibble(scan)
   motif_vector_list[[fold]] <- list()
@@ -150,6 +168,23 @@ for (fold in 1:5){
 
 
 ```
+
+
+```{r}
+library(universalmotif)
+library(GenomicRanges)
+library(ggbio)
+
+coba <- universalmotif::scan_sequences(motList[[fold]],subseq(seq_test_list[[fold]],start = start_slice,end = end_slice),
+                                       nthreads=4, return.granges = TRUE)
+autoplot(coba, layout = "karyogram", aes(fill = motif, color = motif)) +
+theme(
+strip.background = element_rect(fill = NA, colour = NA),
+panel.background = element_rect(fill = NA, colour = NA)
+)
+```
+
+
 
 
 ```{r}
@@ -208,8 +243,7 @@ model_summ_df |> mutate(signf_ctrl = ifelse(est_ctrl_pval < 0.05, "SIGNF", "UNSI
 
 
 ```{r}
-library(ggrepel)
-library(latex2exp)
+
 
 ggplot(data = model_summ_df |> mutate(signf_ctrl = ifelse(est_ctrl_pval < 0.05, "SIGNF", "UNSIGNF"),
                         signf_case = ifelse(est_case_pval < 0.05, "SIGNF", "UNSIGNF")), 
@@ -220,7 +254,7 @@ ggplot(data = model_summ_df |> mutate(signf_ctrl = ifelse(est_ctrl_pval < 0.05, 
   geom_text_repel() + 
   # title("Plot Logit Model Of Motif ") + 
   xlab("est log(ctrl m6A_level OR) effect") +
-  ylab("est log(hypoxia m6A_level OR) effect") +
+  ylab("est log(ctrl m6A_level OR) effect") +
   xlim(-15, 15) + 
   ylim(-10, 10) +
   #theme with white background
@@ -266,23 +300,341 @@ ggplot(data = model_summ_df, aes(x = consensus)) +
 
 
 
-
 ```{r}
-model_summ_df |> dplyr::filter(consensus %in% c("TCGACNNN", "GGGGCNNN"))
-```
-```{r}
-motList[[5]]
+hist(scan_list[[fold]]$start + 250 -1)
+hist(scan_list[[fold]]$stop + 250 -1)
 ```
 
-```{r}
-valid_data_list
 
-ggplot(data=valid_data_list[[1]], mapping = aes(x = pred_case, y = pred_control)) + 
-  geom_point()
+HERE IT IS BASED ON THE OCCURENCE 
+
+```{r}
+
+n_cores <- parallel::detectCores()
+doMC::registerDoMC(n_cores-1)
+
+#Check registered DoPar 
+foreach::getDoParRegistered() == TRUE 
+# foreach::getDoParWorkers() == 6 # In my MBP M1 
+
+fold = 5
+
+start <- proc.time()[[3]]
+# Parallel loop to compute increments
+scan_list <- foreach(seq_id = 1:length(seq_test_list[[fold]]), 
+                     .packages = c("foreach", "tidyverse")) %dopar% {
+  # Create a local matrix to store the increment for this iteration
+  local_increment <- matrix(0, nrow = filter, ncol = width(seq_test_list[[fold]][1]) )
+  rownames(local_increment) <- paste0("filter_",c(1:filter))
+  
+  for (filter_idx in c(1:filter)){
+    filter_at <- paste0("filter_",filter_idx)
+    temp <- results |> filter(motif==filter_at, sequence.i==seq_id)
+    if (nrow(temp) != 0){
+      for(row_temp in c(1:dim(temp)[1])){
+        # Calculate start and stop positions
+        start_pos <- temp$start[row_temp] + (start_slice - 1)
+        stop_pos <- temp$stop[row_temp] + (start_slice - 1)
+        
+        print(start_pos)
+        print(stop_pos)
+
+        # Increment the local matrix for the given motif occurrence
+        local_increment[filter_at, start_pos:stop_pos] <- local_increment[filter_at, start_pos:stop_pos] + 1
+        
+      }
+    }
+  }
+  local_increment
+}
+
+# Sum up all increments
+# freq_result <- rowsum(increments_list, row.names(increments_list))
+elapsed <- proc.time()[[3]] - start
+
+print(paste0("Elapsed time: ", elapsed))
+
+
+scan_list_reduce <- Reduce(`+`, scan_list) # 16,1001 
 ```
+
+
+
+I think we need to change it such that our data is consist of starting index of motif, nad the y axis is the score find from the scan_motif. Therefore we can find any scoring which is not overlap for the downstream graph!
+
+```{r}
+results |> group_by(sequence.i) |> count() |> arrange(desc(n)) |> head()
+```
+
+
+
+
+
+
+
+```{r}
+# OVERALL PATTERN 
+temp_df <- data.frame(x=c(1:1001), y=colSums(scan_list_reduce))
+ggplot(temp_df, mapping=aes(x=x, y=y, color="black", fill="gray")) + 
+  geom_bar(stat="identity", position="identity", show.legend = FALSE) + 
+  xlim(250,750) +
+  labs(title = "Overall Pattern Cumulative Sum of Detected Motif",
+       x = "Position",
+       y = "Cumulative Sum") + 
+  theme_minimal()
+
+```
+
 ```{r}
 
-ggplot(data=valid_data_list[[1]], mapping = aes(x = true_case, y = true_control)) + 
-  geom_point()
+filter = 7
+temp_df <- data.frame(x=c(-500:500), y=scan_list_reduce[filter,]) #5, 10, 11
+temp_mean_df <- data.frame(x=c(-500:500), y=colMeans(scan_list_reduce))
+bar <-ggplot() + 
+  geom_line(temp_mean_df, mapping=aes(x=x, y=y), color="grey", show.legend = FALSE) + 
+  geom_line(temp_df, mapping=aes(x=x, y=y), color="red", show.legend = FALSE) + 
+  xlim(-260,240) +
+  labs(
+       x = "Starting Position of Motif Relative to m6A Site",
+       y = "Cumulative Window Hits") + 
+  theme_minimal() + 
+  #eliminates background, gridlines, and chart border
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+  ) 
+
+
+temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
+p <- ggseqlogo::ggseqlogo(temp_mat) 
+
+blank <- grid::nullGrob()
+
+# Layout
+layout_matrix <- matrix(c(1, 4, 3, 4,2,4), nrow = 3, byrow = TRUE)
+gridExtra::grid.arrange(blank, blank, p, bar,  layout_matrix = layout_matrix, 
+             widths = c(1, 3), heights = c(2.3, 2, 2.3), top=paste("Fold", fold, "Filter", filter))
+```
+
+
+```{r}
+library(patchwork)
+filter = 5
+temp_df <- data.frame(x=c(1:1001), y=scan_list_reduce[filter,]) #5, 10, 11
+temp_mean_df <- data.frame(x=c(1:1001), y=colMeans(scan_list_reduce))
+bar <-ggplot() + 
+  geom_line(temp_mean_df, mapping=aes(x=x, y=y), color="grey", show.legend = FALSE) + 
+  geom_line(temp_df, mapping=aes(x=x, y=y), color="red", show.legend = FALSE) + 
+  xlim(260,740) +
+  labs(title=paste("Fold", fold, "Filter", filter),
+       x = "Starting Position of Motif",
+       y = "Cumulative Window Hits") + 
+  theme_minimal() + 
+  #eliminates background, gridlines, and chart border
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+  ) 
+
+temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
+p <- ggseqlogo::ggseqlogo(temp_mat) 
+
+bar + inset_element(p, 0.7, 0, 1, 0.3)
+```
+
+
+```{r}
+
+for (fold in 1:5) {
+  plots <- list() # Temporary list to store plots for each fold
+  for (filter in 1:16) {
+    temp_mat <- convert_type(motList[[fold]][[filter]], 'ICM')@motif
+    p <- ggseqlogo(temp_mat) + 
+      labs(title = paste("Fold", fold, "Filter", filter))
+    plots[[filter]] <- p
+  }
+  # Combine all plots for the current fold
+  combined_plot <- do.call(gridExtra::grid.arrange, c(plots, ncol = 4))
+  plot_list[[fold]] <- combined_plot
+}
+```
+
+
+
+```{r}
+
+plot_list <- list()
+for (fold in 5:5) {  # Adjust the range as needed
+  plots <- list() # Temporary list to store plots for each fold
+  plots_vec <- c()
+  for (filter in 1:16) {
+    temp_df <- data.frame(x = 1:1001, y = scan_list_reduce[filter,])
+    temp_mean_df <- data.frame(x = 1:1001, y = colMeans(scan_list_reduce))
+
+    bar <- ggplot() + 
+      geom_line(data = temp_mean_df, aes(x = x, y = y), color = "grey", show.legend = FALSE) +
+      geom_line(data = temp_df, aes(x = x, y = y), color = "red", show.legend = FALSE) +
+      xlim(260, 740) +
+      labs(x = "Position", y = "Cumulative Window Sum") + 
+      theme_minimal() +
+      theme(plot.background = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+    temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
+    p <- ggseqlogo::ggseqlogo(temp_mat)
+    combined_plot <- bar + patchwork::inset_element(p, left = 0.7, bottom = 0, right = 1, top = 0.3)
+    
+
+
+
+    blank <- grid::nullGrob()
+    
+    # Layout
+    layout_matrix <- matrix(c(1, 4, 3, 4,2,4), nrow = 3, byrow = TRUE)
+    combined_plot <- gridExtra::grid.arrange(blank, blank, p, bar,  layout_matrix = layout_matrix, 
+                 widths = c(1, 3), heights = c(2.3, 2, 2.3), top=paste("Fold", fold, "Filter", filter))
+    
+    # Combine plots directly into a patchwork object
+    plots[[filter]] <- combined_plot
+    plots_vec <- append(plots_vec, combined_plot)
+    print(combined_plot)
+  }
+  # Use a compatible method to combine all plots in `plots`
+  plot_grid <-  ggpubr::ggarrange(plots_vec, common.legend = TRUE)
+  plot_list[[fold]] <- plot_grid
+}
+```
+
+
+
+```{r}
+plot_list <- list()
+for (fold in 5:5) {
+  plot_grid <- list()  # Initialize to store combined ggplot objects
+  for (filter in 1:16) {
+    # Generate each plot
+    temp_df <- data.frame(x = 1:1001, y = scan_list_reduce[filter,])
+    temp_mean_df <- data.frame(x = 1:1001, y = colMeans(scan_list_reduce))
+
+    bar <- ggplot() + 
+      geom_line(data = temp_mean_df, aes(x = x, y = y), color = "grey") +
+      geom_line(data = temp_df, aes(x = x, y = y), color = "red") +
+      xlim(260, 740) +
+      labs(x = "Position", y = "Cumulative Window Sum") +
+      theme_minimal() +
+      theme(
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = margin(5, 5, 5, 5, "pt")  # Adjust margins as needed
+      )
+
+    temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
+    p <- ggseqlogo::ggseqlogo(temp_mat)
+    combined_plot <- bar + inset_element(p, left = 0.7, bottom = 0, right = 1, top = 0.3)
+
+    # Add to the cumulative plot object
+    if (is.null(plot_grid)) {
+      plot_grid <- combined_plot
+    } else {
+      plot_grid <- plot_grid + combined_plot
+    }
+  }
+  
+  # Define the layout and include spacers if needed
+  plot_grid <- plot_grid + 
+    plot_layout(ncol = 4, nrow = 4, widths=8, heights=4)  # Ensuring layout fits all plots
+  plot_list[[fold]] <- plot_grid
+}
+```
+
+```{r}
+n_cores <- parallel::detectCores()
+doMC::registerDoMC(n_cores-1)
+
+#Check registered DoPar 
+foreach::getDoParRegistered() == TRUE 
+# foreach::getDoParWorkers() == 6 # In my MBP M1 
+
+fold = 5
+
+start <- proc.time()[[3]]
+# Parallel loop to compute increments
+scan_list_score <- foreach(seq_id = 1:length(seq_test_list[[fold]]), 
+                     .packages = c("foreach", "tidyverse")) %dopar% {
+  # Create a local matrix to store the increment for this iteration
+  local_increment_score <- matrix(0, nrow = filter, ncol = width(seq_test_list[[fold]][1]) )
+  rownames(local_increment_score) <- paste0("filter_",c(1:filter))
+  
+  for (filter_idx in c(1:filter)){
+    filter_at <- paste0("filter_",filter_idx)
+    temp <- as.tibble(scan_list[[fold]]) |> filter(motif==filter_at, sequence.i==seq_id)
+    if (nrow(temp) != 0){
+      for(row_temp in c(1:dim(temp)[1])){
+        # Calculate start positions
+        start_pos <- temp$start[row_temp] + (start_slice - 1)
+        
+        print(start_pos)
+        # Increment the local matrix for the given motif score
+        local_increment_score[filter_at, start_pos:start_pos] <- local_increment_score[filter_at, start_pos:start_pos] + temp$score[row_temp] 
+        
+      }
+    }
+  }
+  local_increment_score
+}
+
+# Sum up all increments
+# freq_result <- rowsum(increments_list, row.names(increments_list))
+elapsed <- proc.time()[[3]] - start
+
+print(paste0("Elapsed time: ", elapsed))
+
+
+scan_list_score_reduce <- Reduce(`+`, scan_list_score) # 16,1001 
+```
+
+# DRACH: D(A/G/T)R(A/G)CH(A/C/T)
+```{r}
+plot_motif_dist <- function(scan_list_score_reduce, motList, fold, filter, xlim=10) {
+  temp_df <- data.frame(x=c(-500:500), y=scan_list_score_reduce[filter,]) # Fold5: 5(not enrich), 10, 11
+  # TOMTOM FOR FOLD 5 https://meme-suite.org/meme//opal-jobs/appTOMTOM_SHORT_5.5.51713708295061807977788/tomtom.html
+  
+  temp_mean_df <- data.frame(x=c(-500:500), y=colMeans(scan_list_score_reduce))
+  bar <-ggplot() + 
+    geom_line(temp_mean_df, mapping=aes(x=x, y=y), color="grey", show.legend = FALSE) + 
+    geom_line(temp_df, mapping=aes(x=x, y=y), color="red", show.legend = FALSE) + 
+    xlim(-xlim,xlim) +
+    labs(
+         x = "Starting Position of Motif Relative to m6A Site",
+         y = "Cumulative Score") + 
+    theme_minimal() + 
+    #eliminates background, gridlines, and chart border
+    theme(
+      plot.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+    ) +
+    geom_vline(xintercept = 0, linetype="dotted")
+  
+  temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
+  p <- ggseqlogo::ggseqlogo(temp_mat) 
+  
+  blank <- grid::nullGrob()
+  
+  # Layout
+  layout_matrix <- matrix(c(1, 4, 3, 4,2,4), nrow = 3, byrow = TRUE)
+  gridExtra::grid.arrange(blank, blank, p, bar,  layout_matrix = layout_matrix, 
+               widths = c(1, 3), heights = c(2.3, 2, 2.3), top=paste("Fold", fold, "Filter", filter))
+    
+}
+```
+
+```{r}
+plot_motif_dist(scan_list_score_reduce, motList, fold=5, filter=5, 10)
+plot_motif_dist(scan_list_score_reduce, motList, fold=5, filter=10, 10)
+plot_motif_dist(scan_list_score_reduce, motList, fold=5, filter=11, 10) # Fold5: 5(not enrich), 10, 11
+# TOMTOM FOR FOLD 5 https://meme-suite.org/meme//opal-jobs/appTOMTOM_SHORT_5.5.51713708295061807977788/tomtom.html
 ```
 

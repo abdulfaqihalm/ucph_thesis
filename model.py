@@ -413,102 +413,38 @@ class MultiRMModel(nn.Module):
         out = self.NaiveFC1(context_vector[:,0,:])
         out = torch.squeeze(out*100, dim=-1)
         return out.unsqueeze(1) 
-    
+      
 class ConfigurableModel(nn.Module):
     ## CNN + LSTM
     def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=7, cnn_length=3, 
                  cnn_other_filter=32, cnn_other_kernel_size=6, bilstm_layer=2, bilstm_hidden_size=128, fc_size=256, output_size=1) -> None:
         super().__init__()
         self.CNN = torch.nn.Sequential()
-
-        seq_length = input_size
         for i in range(cnn_length):
             if i == 0:
-                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=input_channel, out_channels=cnn_first_filter,kernel_size=cnn_first_kernel_size,stride=2,padding=0)
-                )
-                self.CNN.add_module(f"BatchNorm_{i+1}", nn.BatchNorm1d(num_features=cnn_first_filter))
-
-                seq_length = ((input_size - (1 * (cnn_first_kernel_size - 1 )) - 1)/2) + 1
-            elif i == 1:
-                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=cnn_first_filter, out_channels=cnn_other_filter, kernel_size=cnn_other_kernel_size, stride=1, padding=1))
+                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=input_channel, out_channels=cnn_first_filter, kernel_size=cnn_first_kernel_size, padding='same'))
+                num_features = cnn_first_filter
             else:
-                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=cnn_other_filter, out_channels=cnn_other_filter, kernel_size=cnn_other_kernel_size, stride=1, padding=1))
-                seq_length = ((seq_length + (2*1) - (1 * (cnn_other_kernel_size - 1 )) - 1)/1) + 1
-
-            if i != 0:
-                self.CNN.add_module(f"BATCHNORM_{i+1}", nn.BatchNorm1d(num_features=cnn_other_filter))
-
+                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=num_features, out_channels=cnn_other_filter, kernel_size=cnn_other_kernel_size, padding='same'))
+                num_features = cnn_other_filter
+            
             self.CNN.add_module(f"RELU_{i+1}", torch.nn.ReLU())
-
-            self.CNN.add_module(f"DROPOUT_{i+1}", torch.nn.Dropout())
+            self.CNN.add_module(f"DROPOUT_{i+1}", torch.nn.Dropout(0.1))
+            self.CNN.add_module(f"BATCHNORM_{i+1}", torch.nn.BatchNorm1d(num_features))
+            self.CNN.add_module(f"MAX_POOL_{i+1}", torch.nn.MaxPool1d(kernel_size=2))
         
         self.biLSTM = nn.LSTM(input_size=cnn_other_filter,hidden_size=bilstm_hidden_size,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
         
         self.flatten = nn.Flatten()
 
         self.FC = nn.Sequential(
-            # nn.Linear(in_features=int(2*bilstm_hidden_size*seq_length),out_features=fc_size),
             nn.LazyLinear(out_features=fc_size),
             # based on your final concatenated features size
+            nn.Dropout(0.2),
             nn.ReLU(),
-            nn.BatchNorm1d(fc_size),
-            nn.Dropout(),
             nn.Linear(fc_size, 64),
+            nn.Dropout(0.2),
             nn.ReLU(),
-            nn.BatchNorm1d(64),
-            nn.Dropout(),
-
-            nn.Linear(64, output_size),
-            nn.Sigmoid()
-
-        )
-    
-    def forward(self, x) -> None:
-        out = self.CNN(x) #[bs feature_dim seq_length]
-        out = out.permute(0, 2, 1) #[bs seq_length feature_dim]
-        out, h = self.biLSTM(out) #[bs seq_length feature_dim]
-        out = self.flatten(out) 
-        out = self.FC(out)
-        out = out
-        return out
-
-
-    
-class ConfigurableModelWoBatchNormDropout(nn.Module):
-    ## CNN + LSTM
-    def __init__(self, input_channel=4, input_size = 1001, cnn_first_filter=8, cnn_first_kernel_size=7, cnn_length=3, 
-                 cnn_other_filter=32, cnn_other_kernel_size=6, bilstm_layer=2, bilstm_hidden_size=128, fc_size=256, output_size=1) -> None:
-        super().__init__()
-        self.CNN = torch.nn.Sequential()
-
-        seq_length = input_size
-        for i in range(cnn_length):
-            if i == 0:
-                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=input_channel, out_channels=cnn_first_filter,kernel_size=cnn_first_kernel_size,stride=2,padding=0)
-                )
-
-                seq_length = ((input_size - (1 * (cnn_first_kernel_size - 1 )) - 1)/2) + 1
-            elif i == 1:
-                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=cnn_first_filter, out_channels=cnn_other_filter, kernel_size=cnn_other_kernel_size, stride=1, padding=1))
-            else:
-                self.CNN.add_module(f"CNN_{i+1}", nn.Conv1d(in_channels=cnn_other_filter, out_channels=cnn_other_filter, kernel_size=cnn_other_kernel_size, stride=1, padding=1))
-                seq_length = ((seq_length + (2*1) - (1 * (cnn_other_kernel_size - 1 )) - 1)/1) + 1
-
-            self.CNN.add_module(f"RELU_{i+1}", torch.nn.ReLU())
-        
-        self.biLSTM = nn.LSTM(input_size=cnn_other_filter,hidden_size=bilstm_hidden_size,batch_first=True,bidirectional=True, num_layers=bilstm_layer)
-        
-        self.flatten = nn.Flatten()
-
-        self.FC = nn.Sequential(
-            # nn.Linear(in_features=int(2*bilstm_hidden_size*seq_length),out_features=fc_size),
-            nn.LazyLinear(out_features=fc_size),
-            # based on your final concatenated features size
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(fc_size, 64),
-            nn.ReLU(),
-            nn.Dropout(),
             nn.Linear(64, output_size),
             nn.Sigmoid()
         )
