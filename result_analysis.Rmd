@@ -1,5 +1,5 @@
 ---
-title: "result_analysis"
+title: "result_analysis2"
 author: "Abdullah Faqih Al Mubarok"
 date: "2024-04-03"
 output: html_document
@@ -24,19 +24,129 @@ library(latex2exp)
 library(ggseqlogo)
 library(parallel)
 library(doMC)
+library(stats)
 library(foreach)
+library(ggpubr)
+library(glmnet)
+library(ggExtra)   # marginal plots
+library(ggtext)    # color your text
+library(paletteer) # get all the color palettes
+library(scales)    # helper functions from ggplot2
+library(ggpointdensity) # for point densitiy plot 
+library(viridis) # for graph scale color
+library(ggpubr) # for stat cor in graph
 ```
 
-## Including Plots
+CONSTANTS 
+```{r}
+NUM_FILTERS <- 24
+NUM_FOLDS <- 5
+```
 
-You can also embed plots, for example:
+
+```{r}
+pred_df <- NULL
+
+for (fold in 1:NUM_FOLDS) {
+  temp <- read_csv(paste0("data/outputs/predictions/validation_",fold,"th_fold_dual_outputs_m6A_info-no_promoter-False_fixed_tune.csv")) |> 
+    mutate(fold = fold)
+  pred_df <- dplyr::bind_rows(pred_df, temp)
+}
+
+head(pred_df)
+```
+
+```{r}
+
+temp_true <- pred_df |> dplyr::mutate(row_number = 1:n()) |>
+  tidyr::pivot_longer(cols = c(true_control, true_case), names_to = "treatment_flag", values_to = "true") |> 
+  dplyr::mutate(treatment_flag = str_extract(treatment_flag, "(control|case)")) |> 
+  dplyr::select(c(row_number,fold,treatment_flag, true))
+temp_pred <- pred_df |> dplyr::mutate(row_number = 1:n()) |>
+  tidyr::pivot_longer(cols = c(pred_control, pred_case), names_to = "treatment_flag", values_to = "pred") |> 
+  dplyr::mutate(treatment_flag = str_extract(treatment_flag, "(control|case)")) |> 
+  dplyr::select(c(row_number,fold,treatment_flag, pred))
+
+plot_pred_df <- temp_true |> 
+  dplyr::inner_join(temp_pred, by = c("row_number", "fold", "treatment_flag")) |> 
+  dplyr::select(!c(row_number))
+
+rm(temp_true, temp_pred)
+```
+
+```{r}
+# Create plot function 
+plot_corr <- function(temp_df, cur_fold, cur_flag, title){
+  p <- ggplot(data = temp_df |> dplyr::filter(treatment_flag==cur_flag), mapping = aes(x = true, y = pred)) + 
+  # geom_point(alhpa=0.2, color="white") +
+  xlim(0,1) +
+  ylim(0,1) +
+  ggtitle(title) +
+  scale_x_continuous(limits=c(0, 1), expand = c(0, 0)) +
+  scale_y_continuous(limits=c(0, 1), expand = c(0, 0)) +
+  geom_pointdensity(alpha = 0.3, adjust=0.35, size=0.65)  +
+  geom_abline(slope=1, intercept=0, linetype="dashed", linewidth=0.85) +
+  theme_minimal() +
+  scale_color_viridis() +
+  stat_cor(method = "pearson", label.x = 0.1, label.y = 0.95, size = 4.5) +  
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")),
+           label.x = 0.1, label.y = 0.9, size = 4.5) +
+  theme(
+    text = element_text(size = 16),
+    plot.title = element_text(size=16, hjust = 0.5),
+    legend.position="none",
+    panel.grid.major = element_blank(),
+    axis.title.x=element_blank(),
+    axis.title.y=element_blank()
+    
+  )
+  return(p)
+}
+```
+
+
+
+```{r}
+cur_fold <- 5
+
+temp_df <- plot_pred_df |> dplyr::filter(fold==cur_fold)
+size <- dim(temp_df |> dplyr::filter(treatment_flag=="control"))[1] 
+size <- format(size,big.mark=",") 
+
+p_control <- plot_corr(temp_df, cur_fold, "control", "Control")
+
+extra_1 <- ggExtra::ggMarginal(p_control, type = "histogram", fill = "#453781FF")
+
+p_case <- plot_corr(temp_df, cur_fold, "case", "Hypoxia")
+
+extra_2 <- ggExtra::ggMarginal(p_case, type = "histogram", fill = "#453781FF")
+
+
+grid.arrange(extra_1, extra_2, left = textGrob("Prediction", rot = 90, vjust = 1, gp=gpar(fontsize=16,font=8)),
+             bottom = textGrob("True Value", gp=gpar(fontsize=16,font=8)),
+             top =  textGrob(paste0("FOLD: ",cur_fold, " (n=",size,")"), vjust = 1,  gp=gpar(fontsize=16,fontface="bold")),
+             nrow=1)
+
+```
+
+
+```{r}
+ggplot(data = plot_pred_df, mapping = aes(x = true, y = pred)) + 
+  geom_point() +
+  ggMarginal(red_beard, type = "histogram", fill = "red")
+  facet_wrap(vars(fold,treatment_flag), ncol = 2) 
+```
+
+
+
 
 ```{r pressure, echo=FALSE}
 seq_list <- list()
-for(i in 1:5)
+for(i in 1:NUM_FOLDS)
 {
   seq_list[[i]] <- Biostrings::readDNAStringSet(paste0("/Users/faqih/Documents/UCPH/Thesis/code/data/double_outputs/motif_fasta_test_SPLIT_",i,".fasta"))
 }
+
 seqs <- c(seq_list[[1]],seq_list[[2]],seq_list[[3]],seq_list[[4]],seq_list[[5]])
 seq_mat <- as.matrix(seqs)
 
@@ -55,9 +165,9 @@ nt_freqs
 
 ```{r}
 sequences <- list()
-for(fold in 1:5)
+for(fold in 1:NUM_FOLDS)
 {
-  npz <- np$load(paste0("first_layer_fold_",fold,"_seqs.npz"), allow_pickle = TRUE) # contains "filter_{i}" for each npz
+  npz <- np$load(paste0("first_layer_fold_",fold,"_seqs_fixed_tune.npz"), allow_pickle = TRUE) # contains "filter_{i}" for each npz
   sequences[[fold]] <- npz 
 }
 # features_1 <- abind(features_1)
@@ -65,11 +175,12 @@ dim(sequences[[2]][["filter_1"]])
 dim(sequences[[1]][["filter_2"]])
 ```
 
+
 ```{r}
 motList <- list()
-for (fold in 1:5){
+for (fold in 1:NUM_FOLDS){
   temp <- list()
-  for (filter in 1:16){
+  for (filter in 1:NUM_FILTERS){
     dna_ss <- RNAStringSet(sequences[[fold]][[paste0("filter_",filter)]])
     motif <- universalmotif::create_motif(dna_ss,
                               type="PWM",
@@ -88,9 +199,9 @@ length(unlist(motList))
 ```{r}
 
 
-for (fold in c(1:5)){
+for (fold in c(1:NUM_FOLDS)){
   mat_matrix = list()
-  for (filter in c(1:16)){
+  for (filter in c(1:NUM_FILTERS)){
     temp_mat <- convert_type(motList[[fold]][[filter]], 'ICM')@motif
     mat_matrix[[filter]] <- temp_mat
   }
@@ -105,9 +216,9 @@ for (fold in c(1:5)){
 ```{r}
 plot_list <- list() # Initialize an empty list to store ggplot objects
 
-for (fold in 1:5) {
+for (fold in 1:NUM_FOLDS) {
   plots <- list() # Temporary list to store plots for each fold
-  for (filter in 1:16) {
+  for (filter in 1:NUM_FILTERS) {
     temp_mat <- convert_type(motList[[fold]][[filter]], 'ICM')@motif
     p <- ggseqlogo(temp_mat) + 
       labs(title = paste("Fold", fold, "Filter", filter))
@@ -126,19 +237,20 @@ for (fold in 1:5) {
 seq_train_list <- list()
 seq_test_list <- list()
 valid_data_list <- list()
-for(fold in 1:5)
+for(fold in 1:NUM_FOLDS)
 {
   seq_train_list[[fold]] <- RNAStringSet(Biostrings::readDNAStringSet(paste0("/Users/faqih/Documents/UCPH/Thesis/code/data/double_outputs/motif_fasta_train_SPLIT_",fold,".fasta")))
   seq_test_list[[fold]] <- RNAStringSet(Biostrings::readDNAStringSet(paste0("/Users/faqih/Documents/UCPH/Thesis/code/data/double_outputs/motif_fasta_test_SPLIT_",fold,".fasta")))
   valid_data_list[[fold]] <- read_csv(paste0("validation_",fold,"th_fold_dual_outputs_m6_info-no_promoter-False_MOTIF.csv"), show_col_types = FALSE)
 }
-seqs_train <- c(seq_train_list[[1]],seq_train_list[[2]],seq_train_list[[3]],seq_train_list[[4]],seq_train_list[[5]])
-seqs_test <- c(seq_test_list[[1]],seq_test_list[[2]],seq_test_list[[3]],seq_test_list[[4]],seq_test_list[[5]])
+seqs_train <- c(seq_train_list[[1]],seq_train_list[[2]],seq_train_list[[3]])
+seqs_test <- c(seq_test_list[[1]],seq_test_list[[2]],seq_test_list[[3]])
 ```
 
 ```{r}
 valid_data_list
-
+START_SLICE <- 250
+END_SLICE <- 750
 start_slice <- 250
 end_slice <- 750
 ```
@@ -146,7 +258,7 @@ end_slice <- 750
 ```{r}
 scan_list = list()
 motif_vector_list = list()
-for (fold in 1:5){
+for (fold in 1:NUM_FOLDS){
   # Resulted in overlap motif
   # if using enrich_motifs, not entirched!
   # by default it uses p-value as the threshold. It will use dynamic pvalue which uses default bkg
@@ -154,10 +266,13 @@ for (fold in 1:5){
                                         nthreads=4)
   # to check the enrichment motif with the same params: enrich_motifs(motList[[fold]],subseq(seq_test_list[[fold]],start = start_slice,end = end_slice), nthreads=4, RC = FALSE, no.overlaps=FALSE)
   # the enrichment motif will use the fisher vector of contingency b/w seqList and background by [[num_hits, num_non_hits],[bkg_num_hits, bkg_num_non_hits]] -> H0 there is no relation between hits and experimental (non-background). Actually we could use it to filter further what kind of motifs which we can look at (as.tibble(enrich_coba) |> dplyr::arrange(desc(target.hits)))
+  scan <- as_tibble(scan)
+  mot_df <- universalmotif::to_df(motList[[fold]])
+  scan <- scan |> inner_join(mot_df |> select(c(name, consensus)), by = dplyr::join_by(motif==name))
   scan_list[[fold]] <- scan
-  scan <- as.tibble(scan)
+  # Create vector list to check the motif occurence
   motif_vector_list[[fold]] <- list()
-  for (selected_motif in (unique(scan |> dplyr::pull(motif)))) {
+  for (selected_motif in (paste0("filter_",c(1:filter))) ) {
     seqs_id <- c(1:length(seq_test_list[[fold]]))
     motif_seqs <- scan |> 
       dplyr::filter(motif == selected_motif) |> 
@@ -170,21 +285,201 @@ for (fold in 1:5){
 ```
 
 
+# ====== NEW =========
 ```{r}
-library(universalmotif)
-library(GenomicRanges)
-library(ggbio)
+motif_data = list()
 
-coba <- universalmotif::scan_sequences(motList[[fold]],subseq(seq_test_list[[fold]],start = start_slice,end = end_slice),
-                                       nthreads=4, return.granges = TRUE)
-autoplot(coba, layout = "karyogram", aes(fill = motif, color = motif)) +
-theme(
-strip.background = element_rect(fill = NA, colour = NA),
-panel.background = element_rect(fill = NA, colour = NA)
-)
+for (fold in 1:NUM_FOLDS){
+  temp_pred <- readr::read_csv(paste0("validation_",fold,"th_fold_dual_outputs_m6A_info-no_promoter-False_fixed_tune.csv"))
+  temp_pred <- temp_pred |> 
+    mutate(fold = fold, pred_diff = pred_case - pred_control, true_diff = true_case - true_control, sequence.i = row_number()) |>
+    select(fold, sequence.i, pred_diff,true_diff) 
+  temp_pred
+  
+  temp <- as_tibble(scan_list[[fold]])
+  temp_join <- temp |> 
+    select(c(motif, sequence.i, consensus,score)) |> 
+    group_by(motif, sequence.i, consensus) |> 
+    # summarise(sum_score=sum(score), count=n()) |> 
+    summarise(count=n()) |> 
+    mutate(fold = fold) |> 
+    ungroup()
+  
+  data <- temp_pred |> dplyr::left_join(temp_join |> select(!c(motif)) |> distinct() , by = c("fold"="fold", "sequence.i"="sequence.i")) |> pivot_wider(names_from = consensus, values_from = count, values_fill = 0)
+  
+  motif_data[[fold]] <- data |> select(!c(`NA`))
+}
 ```
 
 
+```{r}
+# Append result 
+final_data <- dplyr::bind_rows(motif_data[[1]], motif_data[[2]], motif_data[[3]], motif_data[[4]], motif_data[[5]])
+final_data <- final_data |> mutate_all(funs(replace(., is.na(.), 0)))
+```
+
+
+```{r}
+motif_columns <- (colnames(final_data))[5:dim(final_data)[2]]
+fmla <- as.formula(paste("pred_diff ~ ",paste(motif_columns, collapse = " + ")))
+model <- lm(fmla, data = as.data.frame(final_data))
+summ_model <- summary(model)
+
+summ_df <- as.tibble(summ_model$coefficients) |> mutate(motif = rownames(summ_model$coefficients))
+```
+
+
+```{r}
+ggplot(data = summ_df |> filter(`Pr(>|t|)`<0.05) |> filter(motif != c("(Intercept)", "true_diff")) |> mutate(), mapping = aes(x = Estimate, y = motif, label = motif)) + 
+  geom_point() +
+  geom_text_repel()
+```
+
+
+```{r}
+plot_data <- summ_df |> 
+  filter(`Pr(>|t|)`*(dim(summ_df)[1])<0.05, motif != "(Intercept)", motif !="true_diff") |> 
+  mutate(EffectSign = ifelse(Estimate > 0, "Positive", "Negative"),
+    rank_asc = rank(Estimate),  # Rank in ascending order
+    rank_desc = rank(-Estimate), # Rank in descending order (or rank(desc(value)) with dplyr)
+    alpha = ifelse(rank_asc <= 3 | rank_desc <= 3, 1, 0.75) # Top/Bottom 3 have alpha 1, others 0.75
+  ) |> 
+  select(!c(rank_asc,rank_desc))
+ggplot(data =  plot_data, mapping = aes(x = Estimate, y = reorder(motif, -Estimate), label = motif, fill = EffectSign)) + 
+  geom_col(mapping = aes(alpha = alpha)) +
+  labs(x = "Effect Size", y = "Motif", title = "Effect of Motifs") +
+  theme_minimal() +
+  geom_vline(xintercept = 0, color = "grey") +
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    legend.position="none"
+  ) +
+  scale_fill_manual(values = c("Negative" = "red", "Positive" = "blue"))
+```
+
+```{r}
+pos_motif <- plot_data |> 
+  filter(alpha == 1, EffectSign=="Positive") |> 
+  pull(motif)
+for (mot in pos_motif){
+  for (filter in unlist(motList)) {
+    if (filter@consensus == mot) {
+      temp_mat <- (filter |> convert_type('ICM'))@motif
+      p <- ggseqlogo(temp_mat) + 
+        labs(title = paste("Motif", mot))
+      print(p)
+    }
+  }
+}
+
+
+neg_motif <- plot_data |> 
+  filter(alpha == 1, EffectSign=="Negative") |> 
+  pull(motif)
+for (mot in neg_motif){
+  for (filter in unlist(motList)) {
+    if (filter@consensus == mot) {
+      temp_mat <- (filter |> convert_type('ICM'))@motif
+      p <- ggseqlogo(temp_mat) + 
+        labs(title = paste("Motif", mot))
+      print(p)
+    }
+  }
+}
+```
+
+
+
+
+```{r}
+library(lmtest)
+library(ggcorrplot)
+ggcorrplot::ggcorrplot(cor(final_data |> select(!c(fold, sequence.i, pred_diff, true_diff)))) + theme(axis.text.x = element_text(angle = 90))
+lmtest::bptest(model)
+```
+
+
+HERE WE TRY TO USE GLMNET THAT EXPLOIT THE LASSO AND RIDGE REGRESSSION.
+
+Before that, let's look at the correlation between the control and case (hypoxia) on true and pred value.
+
+```{r}
+all_valid_data_list <- NULL
+
+for (fold in c(1:NUM_FOLDS)){
+  all_valid_data_list <- dplyr::bind_rows(all_valid_data_list, valid_data_list[[fold]] |> 
+                                            mutate(fold = paste0("fold: ", as.character(fold))))
+
+}
+ggplot(data = all_valid_data_list, mapping = aes(x = true_control, y = true_case)) +
+  geom_point(alpha=0.08) +
+  stat_cor(method="pearson") +
+  theme_minimal() +
+  facet_wrap(vars(fold)) +
+   labs(title = "Correlation between True Control and Case",
+       x = "True Control",
+       y = "True Case")
+
+
+ggplot(data = all_valid_data_list, mapping = aes(x = pred_control, y = pred_case)) +
+  geom_point(alpha=0.08) +
+  stat_cor(method="pearson") +
+  theme_minimal() +
+  facet_wrap(vars(fold)) +
+   labs(title = "Correlation between Pred Control and Case",
+       x = "Pred Control",
+       y = "Pred Case")
+
+```
+USING GLMNET with default 10 folds 
+```{r}
+net_cv_fit_05_alpha <- glmnet::cv.glmnet(x = as.matrix(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff))), y = final_data$true_diff, alpha = 0.5, family = "gaussian", parallel=TRUE)
+
+net_cv_fit_1_alpha <- glmnet::cv.glmnet(x = as.matrix(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff))), y = final_data$true_diff, alpha = 1, family = "gaussian", parallel=TRUE)
+
+
+net_cv_fit_0_alpha <- glmnet::cv.glmnet(x = as.matrix(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff))), y = final_data$true_diff, alpha = 0, family = "gaussian", parallel=TRUE)
+```
+
+```{r}
+par(mfrow = c(2,2))
+plot(net_cv_fit_1_alpha); plot(net_cv_fit_05_alpha ); plot(net_cv_fit_0_alpha)
+plot(log(net_cv_fit_1_alpha$lambda)   , net_cv_fit_1_alpha$cvm , pch = 19, col = "red",
+     xlab = "log(Lambda)", ylab = net_cv_fit_1_alpha$name)
+points(log(net_cv_fit_05_alpha $lambda), net_cv_fit_05_alpha $cvm, pch = 19, col = "grey")
+points(log(net_cv_fit_0_alpha$lambda) , net_cv_fit_0_alpha$cvm , pch = 19, col = "blue")
+legend("topleft", legend = c("alpha= 1", "alpha= .5", "alpha 0"),
+       pch = 19, col = c("red","grey","blue"))
+```
+```{r}
+library(plotmo) # for plotres
+plotres(net_cv_fit_05_alpha)
+```
+
+
+
+
+
+NOW FOR THE TRUE 
+
+```{r}
+fmla2 <- as.formula(paste("true_diff ~ ",paste(motif_columns, collapse = " + ")))
+model2 <- glm(fmla2, data = as.data.frame(final_data))
+summ_df2 <- as.tibble(summary(model2)$coefficients) |> mutate(motif = rownames(summary(model2)$coefficients))
+
+ggplot(data = summ_df2 |> filter(`Pr(>|t|)`<0.05) |> filter(motif != "(Intercept)") |> mutate(), mapping = aes(x = Estimate, y = motif, label = motif)) + 
+  geom_point() +
+  geom_text_repel()
+```
+
+
+
+
+
+# ====== OLD =========
 
 
 ```{r}
@@ -205,10 +500,16 @@ model_summ_df <- dplyr::tibble(
   est_case_pval = numeric()
 )
 
-for (fold in 1:5){
+for (fold in 1:NUM_FOLDS){
   model_summ_list[[fold]] <- list()
-  for (filter in 1:16){
+  for (filter in 1:NUM_FILTERS){
+    # Get the prediction data for each fold
     temp_df <- valid_data_list[[fold]] |> dplyr::select(c(pred_control, pred_case))
+    
+
+    # the log odds of the dependent variable being 1 (rather than 0) for a one-unit change in the independent variable
+    # An increase in an est_coff (set others constant) is associated with an increase in the log odds of y=1, and thus an increase in the odds of y=1
+    # log used here is in natural log -> convert into OR with exp()
     model <- glm(motif_vector_list[[fold]][[paste0("filter_",filter)]] ~ temp_df$pred_control + temp_df$pred_case, family="binomial")
     model_conf_int <- exp(confint(model))
     summ_model <- summary(model)
@@ -217,16 +518,16 @@ for (fold in 1:5){
     model_summ_df <- model_summ_df |> 
       dplyr::add_row(fold = fold, filter = filter,
                      consensus=as.data.frame(motList[[fold]][[filter]])$consensus, 
-                     est_ctrl = coeff[2,1],
-                     est_OR_ctrl = exp(coeff[2,1]),
+                     est_ctrl = coeff[2,'Estimate'],
+                     est_OR_ctrl = exp(coeff[2,'Estimate']),
                      est_low_OR_ctrl = model_conf_int[2,1],
                      est_high_OR_ctrl = model_conf_int[2,2],
-                     est_ctrl_pval = coeff[2,4], 
-                     est_case = coeff[3,1], 
-                     est_OR_case = exp(coeff[3,1]), 
+                     est_ctrl_pval = coeff[2,'Pr(>|z|)'], 
+                     est_case = coeff[3,'Estimate'], 
+                     est_OR_case = exp(coeff[3,'Estimate']), 
                      est_low_OR_case =  model_conf_int[3,1],
                      est_high_OR_case = model_conf_int[3,2],
-                     est_case_pval = coeff[3,4])
+                     est_case_pval = coeff[3,'Pr(>|z|)'])
   }
 }
 
@@ -248,13 +549,15 @@ model_summ_df |> mutate(signf_ctrl = ifelse(est_ctrl_pval < 0.05, "SIGNF", "UNSI
 ggplot(data = model_summ_df |> mutate(signf_ctrl = ifelse(est_ctrl_pval < 0.05, "SIGNF", "UNSIGNF"),
                         signf_case = ifelse(est_case_pval < 0.05, "SIGNF", "UNSIGNF")), 
        mapping = aes(x = est_ctrl, y = est_case, label = consensus)) + 
-  geom_point(mapping = aes(shape = factor(signf_ctrl), color = factor(signf_case)))+
+  geom_point(mapping = aes(shape = factor(signf_ctrl), color = factor(signf_case)),
+             size = 2.5, alpha = 0.75)+
   geom_hline(yintercept = 0) +
   geom_vline(xintercept = 0) +
   geom_text_repel() + 
-  # title("Plot Logit Model Of Motif ") + 
-  xlab("est log(ctrl m6A_level OR) effect") +
-  ylab("est log(ctrl m6A_level OR) effect") +
+  labs(title = "Logit Model Of Motifs Occurence",
+       x = "est. LOR_(m6A case) effect",
+       y = "est. LOR_(m6A ctrl) effect",
+       color = "Significance") +
   xlim(-15, 15) + 
   ylim(-10, 10) +
   #theme with white background
@@ -266,35 +569,6 @@ ggplot(data = model_summ_df |> mutate(signf_ctrl = ifelse(est_ctrl_pval < 0.05, 
     panel.border = element_blank()
   ) 
 
-
-```
-
-```{r}
-# Assuming model_summ_df already contains odds_ratio and CI for both control and case
-ggplot(data = model_summ_df, aes(x = consensus)) + 
-  geom_point(aes(y = est_OR_ctrl, color = "Control"), size = 3) +
-  geom_errorbar(aes(ymin = est_low_OR_ctrl, ymax = est_high_OR_ctrl, color = "Control"), width = 0.2) +
-  geom_point(aes(y = est_OR_case, color = "Case"), size = 3) +
-  geom_errorbar(aes(ymin = est_low_OR_case, ymax = est_high_OR_case, color = "Case"), width = 0.2) +
-  scale_color_manual(values = c("Control" = "blue", "Case" = "red")) +
-  geom_hline(yintercept = 1, linetype = "dashed") +  # OR = 1 line
-  coord_trans(y = "log") +  # Log scale for odds ratios
-  labs(
-    title = "Odds Ratios of Logistic Regression Model",
-    x = "",
-    y = "Odds Ratio (log scale)",
-    color = "Condition"
-  ) +
-  theme_bw() +
-  theme(
-    plot.background = element_blank(),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.border = element_blank(),
-    legend.position = "bottom"
-  ) +
-  # geom_text_repel(aes(y = odds_ratio_ctrl, label = consensus), color = "black", size = 3, direction = "y") +
-  ylim(c(0.1, 10))  # Adjust as needed based on your data
 
 ```
 
@@ -317,7 +591,7 @@ doMC::registerDoMC(n_cores-1)
 foreach::getDoParRegistered() == TRUE 
 # foreach::getDoParWorkers() == 6 # In my MBP M1 
 
-fold = 5
+fold = NUM_FOLDS
 
 start <- proc.time()[[3]]
 # Parallel loop to compute increments
@@ -447,9 +721,9 @@ bar + inset_element(p, 0.7, 0, 1, 0.3)
 
 ```{r}
 
-for (fold in 1:5) {
+for (fold in 1:NUM_FOLDS) {
   plots <- list() # Temporary list to store plots for each fold
-  for (filter in 1:16) {
+  for (filter in 1:NUM_FILTERS) {
     temp_mat <- convert_type(motList[[fold]][[filter]], 'ICM')@motif
     p <- ggseqlogo(temp_mat) + 
       labs(title = paste("Fold", fold, "Filter", filter))
@@ -469,7 +743,7 @@ plot_list <- list()
 for (fold in 5:5) {  # Adjust the range as needed
   plots <- list() # Temporary list to store plots for each fold
   plots_vec <- c()
-  for (filter in 1:16) {
+  for (filter in 1:NUM_FILTERS) {
     temp_df <- data.frame(x = 1:1001, y = scan_list_reduce[filter,])
     temp_mean_df <- data.frame(x = 1:1001, y = colMeans(scan_list_reduce))
 
@@ -484,7 +758,6 @@ for (fold in 5:5) {  # Adjust the range as needed
     temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
     p <- ggseqlogo::ggseqlogo(temp_mat)
     combined_plot <- bar + patchwork::inset_element(p, left = 0.7, bottom = 0, right = 1, top = 0.3)
-    
 
 
 
@@ -512,7 +785,7 @@ for (fold in 5:5) {  # Adjust the range as needed
 plot_list <- list()
 for (fold in 5:5) {
   plot_grid <- list()  # Initialize to store combined ggplot objects
-  for (filter in 1:16) {
+  for (filter in 1:NUM_FILTERS) {
     # Generate each plot
     temp_df <- data.frame(x = 1:1001, y = scan_list_reduce[filter,])
     temp_mean_df <- data.frame(x = 1:1001, y = colMeans(scan_list_reduce))
@@ -549,6 +822,9 @@ for (fold in 5:5) {
 }
 ```
 
+
+
+
 ```{r}
 n_cores <- parallel::detectCores()
 doMC::registerDoMC(n_cores-1)
@@ -561,7 +837,7 @@ fold = 5
 
 start <- proc.time()[[3]]
 # Parallel loop to compute increments
-scan_list_score <- foreach(seq_id = 1:length(seq_test_list[[fold]]), 
+scan_list_freq <- foreach(seq_id = 1:length(seq_test_list[[fold]]), 
                      .packages = c("foreach", "tidyverse")) %dopar% {
   # Create a local matrix to store the increment for this iteration
   local_increment_score <- matrix(0, nrow = filter, ncol = width(seq_test_list[[fold]][1]) )
@@ -569,7 +845,7 @@ scan_list_score <- foreach(seq_id = 1:length(seq_test_list[[fold]]),
   
   for (filter_idx in c(1:filter)){
     filter_at <- paste0("filter_",filter_idx)
-    temp <- as.tibble(scan_list[[fold]]) |> filter(motif==filter_at, sequence.i==seq_id)
+    temp <- as_tibble(scan_list[[fold]]) |> filter(motif==filter_at, sequence.i==seq_id)
     if (nrow(temp) != 0){
       for(row_temp in c(1:dim(temp)[1])){
         # Calculate start positions
@@ -577,7 +853,7 @@ scan_list_score <- foreach(seq_id = 1:length(seq_test_list[[fold]]),
         
         print(start_pos)
         # Increment the local matrix for the given motif score
-        local_increment_score[filter_at, start_pos:start_pos] <- local_increment_score[filter_at, start_pos:start_pos] + temp$score[row_temp] 
+        local_increment_score[filter_at, start_pos:start_pos] <- local_increment_score[filter_at, start_pos:start_pos] + 1 
         
       }
     }
@@ -592,7 +868,7 @@ elapsed <- proc.time()[[3]] - start
 print(paste0("Elapsed time: ", elapsed))
 
 
-scan_list_score_reduce <- Reduce(`+`, scan_list_score) # 16,1001 
+scan_list_freq_reduce <- Reduce(`+`, scan_list_freq) # 16,1001 
 ```
 
 # DRACH: D(A/G/T)R(A/G)CH(A/C/T)
@@ -608,7 +884,7 @@ plot_motif_dist <- function(scan_list_score_reduce, motList, fold, filter, xlim=
     xlim(-xlim,xlim) +
     labs(
          x = "Starting Position of Motif Relative to m6A Site",
-         y = "Cumulative Score") + 
+         y = "Motif Frequency") + 
     theme_minimal() + 
     #eliminates background, gridlines, and chart border
     theme(
@@ -631,10 +907,78 @@ plot_motif_dist <- function(scan_list_score_reduce, motList, fold, filter, xlim=
 }
 ```
 
+
 ```{r}
-plot_motif_dist(scan_list_score_reduce, motList, fold=5, filter=5, 10)
-plot_motif_dist(scan_list_score_reduce, motList, fold=5, filter=10, 10)
-plot_motif_dist(scan_list_score_reduce, motList, fold=5, filter=11, 10) # Fold5: 5(not enrich), 10, 11
-# TOMTOM FOR FOLD 5 https://meme-suite.org/meme//opal-jobs/appTOMTOM_SHORT_5.5.51713708295061807977788/tomtom.html
+for( fold in c(4:4)){
+  for (filter in c(1:NUM_FILTERS)){
+    plot_motif_dist(scan_list_freq_reduce, motList, fold=fold, filter=filter, 100)
+    
+  }
+}
+```
+
+
+
+```{r}
+for( fold in c(3:3)){
+  for (filter in c(1:NUM_FILTERS)){
+    plot_motif_dist(scan_list_freq_reduce, motList, fold=fold, filter=filter, 100)
+    
+  }
+}
+```
+
+
+# Differnece model 
+
+```{r}
+
+
+
+diff_model_summ_list <- list()
+diff_model_summ_df <- dplyr::tibble(
+  fold = integer(),
+  filter = integer(),
+  consensus = character(),
+  est_effec = numeric(),
+  est_OR_effect = numeric(),
+  est_low_OR_effect = numeric(),
+  est_high_OR_effect = numeric(),
+  est_pval = numeric()
+)
+
+for (fold in 1:NUM_FOLDS){
+  diff_model_summ_list[[fold]] <- list()
+  for (filter in 1:NUM_FILTERS){
+    # Get the prediction data for each fold
+    temp_df <- valid_data_list[[fold]] |> dplyr::select(c(pred_control, pred_case))
+    
+    temp_df$diff <- temp_df$pred_control - temp_df$pred_case
+    # the log odds of the dependent variable being 1 (rather than 0) for a one-unit change in the independent variable
+    # An increase in an est_coff (set others constant) is associated with an increase in the log odds of y=1, and thus an increase in the odds of y=1
+    # log used here is in natural log -> convert into OR with exp()
+    model <- glm(motif_vector_list[[fold]][[paste0("filter_",filter)]] ~ temp_df$diff, family="binomial")
+    model_conf_int <- exp(confint(model))
+    summ_model <- summary(model)
+    coeff <- summ_model$coefficients
+    diff_model_summ_list[[fold]][[filter]] <- summ_model
+    diff_model_summ_df <- diff_model_summ_df |> 
+      dplyr::add_row(fold = fold, filter = filter,
+                     consensus=as.data.frame(motList[[fold]][[filter]])$consensus, 
+                     est_effec = coeff[2,'Estimate'],
+                     est_OR_effect = exp(coeff[2,'Estimate']),
+                     est_low_OR_effect = model_conf_int[2,1],
+                     est_high_OR_effect = model_conf_int[2,2],
+                     est_pval = coeff[2,'Pr(>|z|)'])
+  }
+}
+```
+```{r}
+
+```
+
+```{r}
+ggplot(data = diff_model_summ_df |> filter(est_pval/ < 0.05)) + 
+  geom_point(mapping = aes(x = est_effec, y = consensus, label = consensus)) 
 ```
 

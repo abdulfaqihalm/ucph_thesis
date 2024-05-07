@@ -219,7 +219,12 @@ if __name__ == "__main__":
     EXAMPLE USAGE:
     -------
 
-    without m6A channel
+
+    without m6A and one-hot
+    -------
+    python train_test_dual.py --data_folder data/dual_outputs --num_epochs 200 --batch_size 128 --save_dir data/outputs --mode train --learning_rate 0.001 --gpu 2 --plot y --loader_worker 6 --kaiming_init y --tensorboard_writer y  --suffix fixed_tune
+    
+    without m6A channel and gene2vec
     -------
     python train_test_dual.py --data_folder data/dual_outputs --num_epochs 200 --batch_size 256 --save_dir data/outputs --mode train --embedding gene2vec --embedding_file data/embeddings/gene2vec/double_outputs --learning_rate 0.001 --gpu 5 --loader_worker 4  --suffix TEST_DUAL_OUTPUTS_BEST_PARAMS_PROMOTER
 
@@ -233,7 +238,7 @@ if __name__ == "__main__":
     from wrapper.utils import plot_loss_function, plot_correlation, seed_everything, initialize_kaiming_weights, BMCLoss
     from torchinfo import summary
     import wrapper.weighted_losses as wloss
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2, AttentionOnly, TestMotifModelBranchedEnd, TestMotifModelDropoutTest, ResNet1D
+    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2, AttentionOnly, TestMotifModelBranchedEnd, TestMotifModelDropoutTest, ConfigurableModel
     import sys
     import subprocess
 
@@ -393,6 +398,8 @@ if __name__ == "__main__":
 
             config = {'cnn_first_filter': 16, 'cnn_first_kernel_size': 9, 'cnn_length': 3, 'cnn_filter': 32, 'cnn_kernel_size': 7, 'bilstm_layer': 3,
                       'bilstm_hidden_size': 128, 'fc_size': 64, 'lr': args.learning_rate, 'batch_size': args.batch_size, 'patience': args.patience, 'weighted_loss': args.weighted_loss}
+            
+            fixed_tune_config = {'lr': 0.001, 'weight_decay': 0.1, 'cnn_first_filter': 24, 'cnn_first_kernel_size': 7, 'cnn_length': 3, 'cnn_filter': 32, 'cnn_kernel_size': 7, 'bilstm_layer': 3, 'bilstm_hidden_size': 256, 'fc_size': 256}
 
             if args.embedding == "one-hot":
                 if args.m6A_info == "level_channel" or args.m6A_info == "flag_channel":
@@ -433,8 +440,8 @@ if __name__ == "__main__":
                     # model = TestMotifModel(input_channel=4, input_size=input_size, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
                     #                         cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
                     #                         output_size=2)
-                    model = ResNet1D(in_channels=4, base_filters=128, groups=32, kernel_size=8,
-                                     stride=3, n_block=30, n_classes=2, downsample_gap=6, increasefilter_gap=12)
+                    model = ConfigurableModel(input_channel=4, input_size=input_size, cnn_first_filter=fixed_tune_config["cnn_first_filter"], cnn_first_kernel_size=fixed_tune_config["cnn_first_kernel_size"],
+                                            cnn_other_filter=fixed_tune_config["cnn_filter"], cnn_other_kernel_size=fixed_tune_config["cnn_kernel_size"], bilstm_layer=fixed_tune_config["bilstm_layer"], bilstm_hidden_size=fixed_tune_config["bilstm_hidden_size"], fc_size=fixed_tune_config["fc_size"], output_size=2)
 
             if args.embedding == "gene2vec":
                 model = ConfigurableModelWoBatchNorm(input_channel=300, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
@@ -463,7 +470,7 @@ if __name__ == "__main__":
                         "input_size", "output_size", "num_params",  "params_percent", "trainable"])
 
             optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, betas=(
-                args.adam_beta1, args.adam_beta2), weight_decay=0.1)
+                args.adam_beta1, args.adam_beta2), weight_decay=fixed_tune_config["weight_decay"])
             # Train and Validate the model
             _, pred_true = train(model=model, train_loader=train_loader, test_loader=test_loader, epochs=num_epochs, loss_fn=loss_fn, save_dir=args.save_dir, learning_rate=args.learning_rate, device=device,
                                  optimizer=optimizer, tensorboard_writer=tensorboard_writer, weighted_loss=args.weighted_loss, patience=args.patience, suffix=f"{fold}th_fold_{suffix}", fold_info=fold, config=config)
@@ -473,12 +480,10 @@ if __name__ == "__main__":
             logging.info(f"Model of {fold}th fold saved to {model_file}")
 
             if args.plot:
-                plot_loss_function(f"{args.save_dir}/logs/training_{fold}th_fold_{suffix}.log",
-                                   f"{args.save_dir}/analysis", f"loss_plot_{fold}th_fold_{suffix}")
                 plot_correlation(pred_true["true"][:, 0], pred_true["pred"][:, 0],
-                                 f"{args.save_dir}/analysis", f"correlation_plot_{fold}th_fold_{suffix}", "CONTROL")
+                                 f"{args.save_dir}/analysis", f"correlation_plot_{fold}th_fold_{suffix}_CONTROL", "CONTROL")
                 plot_correlation(pred_true["true"][:, 1], pred_true["pred"][:, 1],
-                                 f"{args.save_dir}/analysis", f"correlation_plot_{fold}th_fold_{suffix}", "CASE")
+                                 f"{args.save_dir}/analysis", f"correlation_plot_{fold}th_fold_{suffix}_CASE", "CASE")
 
             save_val = True
             if save_val:

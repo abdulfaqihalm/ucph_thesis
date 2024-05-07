@@ -10,6 +10,17 @@ GLORI EDA
 ```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
 # Load all of the packages that you end up using
 # in your analysis in this code chunk.
+
+library(Biostrings)
+library(tidyverse)
+library(readxl)
+library(GenomicFeatures)
+library(BSgenome)
+library(fuzzyjoin)
+library(rsample) # For kvold split
+library(BSgenome.Hsapiens.NCBI.GRCh38)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene) #v44 Gencode
+library(BSgenome.Mmusculus.UCSC.mm39) # For MEF 
 library(tidyverse)
 library(readxl)
 library(biomaRt)
@@ -18,6 +29,7 @@ library(ggpubr)
 library(ggrepel)
 library(ggplot2)
 library(ggvenn)
+library(ggsignif)
 library(latex2exp)
 # GFF/GTF related libs
 library(rtracklayer) # Interacting with UCSC genome browser
@@ -25,9 +37,12 @@ library(GenomicRanges)
 library(plyranges)
 library(GenomicFeatures)
 library(ensembldb)
-library(Guitar)
 # For dealing with bamfiles
 library(Rsamtools)
+# for genometrack plot 
+library(Gviz)
+# For printing latex table
+library(kableExtra)
 ```
 
 ```{r echo=FALSE, Load_the_Data}
@@ -247,14 +262,14 @@ print(heat_shock_MEF_annot)
 We can see that there are several regions which have null value of the join result. It might be that the region is actually not containing any gene i.e. chr1  10806198 10806198 on heat shock.  
 ```{r}
 # There might be several genes on a position. Check: 
-print(heat_shock_MEF_annot |> group_by(chr, start, end) |> count() |> arrange(desc(n)))
-print(heat_shock_MEF_annot |> filter(chr=='chr5', start==141410368, end==141410368))
-print(hypoxia_HeLa_annot |> group_by(chr, start, end) |> count() |> arrange(desc(n)))
-print(hypoxia_HeLa_annot |> filter(chr=='chr12', start==10996111, end==10996111))
+print(heat_shock_MEF_annot |> dplyr::group_by(chr, start, end) |> count() |> arrange(desc(n)))
+print(heat_shock_MEF_annot |> dplyr::filter(chr=='chr5', start==141410368, end==141410368))
+print(hypoxia_HeLa_annot |> dplyr::group_by(chr, start, end) |> count() |> arrange(desc(n)))
+print(hypoxia_HeLa_annot |> dplyr::filter(chr=='chr12', start==10996111, end==10996111))
 
 # Count of non-annotated pos: 
-print(heat_shock_MEF_annot |> filter(is.na(gene)))
-print(hypoxia_HeLa_annot |> filter(is.na(gene)))
+print(heat_shock_MEF_annot |> dplyr::filter(is.na(gene)))
+print(hypoxia_HeLa_annot |> dplyr::filter(is.na(gene)))
 ```
 
 
@@ -333,7 +348,7 @@ ggplot(data = delta_m6A_data, mapping = aes(x = meth_diff, y = log10pvalue)) +
 print(heat_shock_MEF_annot |> 
         drop_na() |> 
         dplyr::select(c(chr,start,end,meth_diff,log10pvalue,label,gene)) |> 
-        filter(grepl('(?i)hsp|HSPA|IRS3|VEGFA|EGLN', gene)) |> 
+        dplyr::filter(grepl('(?i)hsp|HSPA|IRS3|VEGFA|EGLN', gene)) |> 
         arrange(chr, start, end)) 
   
 
@@ -341,7 +356,7 @@ print(heat_shock_MEF_annot |>
 print(hypoxia_HeLa_annot |> 
         drop_na() |> 
         dplyr::select(c(chr,start,end,meth_diff,log10pvalue,label,gene)) |> 
-        filter(grepl('HSPA|IRS3|VEGFA|EGLN', gene)) |> 
+        dplyr::filter(grepl('HSPA|IRS3|VEGFA|EGLN', gene)) |> 
         arrange(chr, start, end)) 
 ```
 
@@ -352,7 +367,7 @@ print(hypoxia_HeLa_annot |>
 print(heat_shock_MEF_annot |> 
         drop_na() |> 
         dplyr::select(c(chr,start,end,meth_diff,log10pvalue,label,gene)) |> 
-        filter(grepl('HSPA', gene)) |> 
+        dplyr::filter(grepl('HSPA', gene)) |> 
         dplyr::arrange(chr, start, end)) 
   
 
@@ -360,7 +375,7 @@ print(heat_shock_MEF_annot |>
 print(hypoxia_HeLa_annot |> 
         drop_na() |> 
         dplyr::select(c(chr,start,end,meth_diff,log10pvalue,label,gene)) |> 
-        filter(grepl('IRS3|VEGFA|EGLN', gene)) |> 
+        dplyr::filter(grepl('IRS3|VEGFA|EGLN', gene)) |> 
         arrange(chr, start, end)) 
 ```
 
@@ -398,27 +413,33 @@ hs_mef_2 <- read.csv(paste0(GRE_folder,'GSM6432605_HS-2_35bp_m2.totalm6A.FDR.csv
 
 hela_raw_intrsct <- hela_1 |> 
   dplyr::inner_join(hela_2, by=c("Chr", "Sites")) |> 
-  dplyr::rename(Strand=Strand.x, Gene=Gene.x, Transcript=Transcript.x) |> 
-  dplyr::select(Chr, Sites, Strand, Gene, Transcript, Ratio.x, Ratio.y) |> 
+  dplyr::rename(Strand=Strand.x, Gene=Gene.x) |> 
+  dplyr::select(Chr, Sites, Strand, Gene, Ratio.x, Ratio.y) |> 
   rowwise() |> 
-  mutate(meth_ctrl_mean = mean(c_across(c('Ratio.x', 'Ratio.y')), na.rm=TRUE)) |> 
+  mutate(meth_ctrl_mean = mean(c_across(c('Ratio.x', 'Ratio.y')))) |> 
   ungroup() |> 
   dplyr::select(!c(Ratio.x, Ratio.y))
 hela_raw_hypoxia_intrsct <-  hypox_hela_1 |> 
   dplyr::inner_join(hypox_hela_2, by=c("Chr", "Sites")) |> 
-  dplyr::rename(Strand=Strand.x, Gene=Gene.x, Transcript=Transcript.x)|> 
-  dplyr::select(Chr, Sites, Strand, Gene, Transcript, Ratio.x, Ratio.y) |> 
+  dplyr::rename(Strand=Strand.x, Gene=Gene.x) |> 
+  dplyr::select(Chr, Sites, Strand, Gene, Ratio.x, Ratio.y) |> 
   rowwise() |> 
-  mutate(meth_case_mean = mean(c_across(c('Ratio.x', 'Ratio.y')), na.rm=TRUE)) |> 
+  mutate(meth_case_mean = mean(c_across(c('Ratio.x', 'Ratio.y')))) |> 
   ungroup() |> 
   dplyr::select(!c(Ratio.x, Ratio.y))
 
 hela_hypoxia_intrsct <- hela_raw_intrsct |> 
   dplyr::full_join(hela_raw_hypoxia_intrsct, by=c("Chr", "Sites")) |> 
-  dplyr::mutate(Strand = ifelse(is.na(Strand.x),Strand.y,Strand.x),
+  dplyr::mutate(strand = ifelse(is.na(Strand.x),Strand.y,Strand.x),
                 meth_control = ifelse(is.na(meth_ctrl_mean), 0, meth_ctrl_mean),
-                meth_case = ifelse(is.na(meth_case_mean), 0, meth_case_mean)) |> 
-  dplyr::select(c(Chr, Sites, Strand, meth_case, meth_control))
+                meth_case = ifelse(is.na(meth_case_mean), 0, meth_case_mean),
+                end = Sites,
+                gene= ifelse(is.na(Gene.x), Gene.y, Gene.x)) |> 
+  dplyr::rename(seqnames=Chr, start=Sites) |> 
+  dplyr::select(c(seqnames, start, end, strand, gene, meth_case, meth_control))
+
+#Sanity check, should be zero --> no duplicate sites, thus safe for training-test split
+hela_raw_hypoxia_intrsct |> dplyr::group_by(Chr, Sites) |> dplyr::summarise(count=dplyr::n()) |> dplyr::filter(count>1)
   
 
 #NOTES:
@@ -457,6 +478,8 @@ ggvenn::ggvenn(
 
 
 ```
+
+## SUPP FIGURE 1
 
 ```{r}
 
@@ -502,6 +525,14 @@ ggplot() +
 
 
 ```{r}
+
+venn_hel_data <- list(
+  control_1 = paste0(hela_1$Chr,"_",hela_1$Sites),
+  control_2 = paste0(hela_2$Chr,"_", hela_2$Sites),
+  hypoxia_1 = paste0(hypox_hela_1$Chr,"_", hypox_hela_1$Sites),
+  hypoxia_2 = paste0(hypox_hela_2$Chr,"_", hypox_hela_2$Sites)
+)
+
 venn_hel_intrsct_data <- list(
   control_raw_intersect =  base::intersect(venn_hel_data$control_1, venn_hel_data$control_2),
   hypoxia_raw_intersect = base::intersect(venn_hel_data$hypoxia_1, venn_hel_data$hypoxia_2)
@@ -512,6 +543,379 @@ ggvenn::ggvenn(
   stroke_size = 0.5, set_name_size = 4, auto_scale = TRUE
   )
 ```
+
+
+```{r}
+# Subject to change
+DATA_FOLDER <- '/Users/faqih/Documents/UCPH/Thesis/code/data/'
+data_path <- '/Users/faqih/Documents/UCPH/Thesis/code/data/'
+# ===== TxD Related ===== #
+# Get annotation to the txDb (including the validity checking)
+human_txDb <- makeTxDbFromGFF(paste0(DATA_FOLDER, 'annot_ref/gencode.v45.annotation.gtf'))
+# Get from rtracklayer to extract metadata
+gtf <- rtracklayer::import.gff(con=paste0(DATA_FOLDER, 'annot_ref/gencode.v45.annotation.gtf'), 
+                               format="gtf", genome="GRCh38.p14")
+
+metadata <- as.tibble(elementMetadata(gtf)[ , c("gene_id", "gene_name", 
+                                                "gene_type", "transcript_id", 
+                                                "transcript_name")])
+metadata <- na.omit(metadata)
+metadata <- metadata[!duplicated(metadata), ]
+
+# Tx
+human_Tx <- transcripts(human_txDb)
+# Transcript length summary
+human_Tx_length <- transcriptLengths(human_txDb,
+                                     with.cds_len=TRUE, with.utr5_len=TRUE, with.utr3_len=TRUE)
+
+
+human_Tx_data <- S4Vectors::merge(human_Tx, metadata, 
+                                  by.x = 'tx_name', by.y = 'transcript_id', all.x=TRUE)
+human_Tx_data <- S4Vectors::merge(human_Tx_data, human_Tx_length |> 
+                                    dplyr::select(tx_name, nexon, tx_len,cds_len, utr5_len, utr3_len), 
+                                  by.x = 'tx_name', by.y = 'tx_name', all.x=TRUE)
+
+# Filtering the longest transcript (width) only for each gene
+# it still contain numbers of non mRNA gene: i.e. rRNA, tRNA, Mt_RNA, etc.
+human_Tx_data_longest <- human_Tx_data |> 
+  dplyr::group_by(gene_id) |> 
+  dplyr::filter(width == max(width)) |> 
+  # Since several transcripts could have the same start and end.
+  # need to filter by tx_len (CDS + UTRs)
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() |> 
+  # STILL CONTAIN DUPLICATE. CHECK: human_Tx_data_longest |>  dplyr::inner_join(human_Tx_data_longest |> dplyr::select(gene_name, gene_type) |> group_by(gene_name) |> dplyr::summarise(count = dplyr::n()) |> dplyr::filter(count>1), by=c("gene_name")) |> arrange(gene_name,tx_id)
+  # Thus add filter below
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(cds_len == max(cds_len)) |> 
+  dplyr::ungroup() |> 
+  # Arbitary filter by tx_name since they already have the save width, cds len
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(tx_name == max(tx_name)) |> 
+  dplyr::ungroup() |> 
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(gene_id == max(gene_id)) |> 
+  dplyr::ungroup() |> 
+  dplyr::select(!c(tx_id)) |> 
+  dplyr::rename('tx_name'='transcript_name', 'tx_id'='tx_name') |> 
+  dplyr::relocate(c('tx_id','tx_name','nexon','tx_len'), 
+                  .after = c('strand'))
+# FILTERING PSEUDOGENE, MISC, VAULT, TO BE CONFIRMED (TEC), ANTIBODY GENES 
+human_Tx_data_longest |> dplyr::filter(!grepl('pseudogene|misc_RNA|vault|TR_|IG|TEC|artifact', gene_type)) |> dplyr::distinct(gene_type)
+
+### Sanity chec. Should be zero! 
+human_Tx_data_longest |>  dplyr::inner_join(human_Tx_data_longest |> dplyr::select(gene_name, gene_type) |> group_by(gene_name) |> dplyr::summarise(count = dplyr::n()) |> dplyr::filter(count>1), by=c("gene_name")) |> arrange(gene_name,tx_id)
+# NOTE: "ELSE" is not known gene from GLORI pipeline
+
+
+
+# ===== Joining Hypoxia with Annot ===== #
+#Here we want to know the longest transcript which annotated from GLORI
+#Expected several NA gene_type from known gene i.e. LOC112268063
+annotated_hypoxia_Hela <- hela_hypoxia_intrsct |> 
+  dplyr::left_join(human_Tx_data_longest |> 
+                     dplyr::select(gene_name, gene_type, tx_id, width, start, end, strand),
+                                                                   by=dplyr::join_by(gene==gene_name)) |>
+  dplyr::rename(start = start.x, end = end.x, strand = strand.x, 
+                start_gene = start.y, end_gene = end.y, strand_gene = strand.y)
+  
+
+# We want to still annotate several sites which might not joined with the longest transcript data 
+# to get the promoters.
+# Note: the non-joined sites are those which have gene_name == "ELSE" and other genes which somehow couldn't be found 
+# from the TxDb. There are ~33,238 stes: annotated_hypoxia_Hela |> dplyr::filter(is.na(start_gene))
+# Other named gene from GLORI migh not be joined due to change in the name. Hence, we will join it by location and take
+# the longest transcript for each gen
+annotated_hypoxia_Hela_temp_na <- (annotated_hypoxia_Hela |> dplyr::filter(is.na(start_gene)) |> 
+     dplyr::select(!c(gene_type, tx_id, width, start_gene, end_gene, strand_gene)) |> dplyr::mutate(site=start)) |> 
+  dplyr::left_join(human_Tx_data_longest |> 
+                     #dplyr::filter(!grepl('vault|TEC|artifact', gene_type)) |> 
+                     dplyr::select(seqnames, start, end, strand, gene_name, gene_type, tx_id,tx_len,width, utr5_len, utr3_len),
+                   by=dplyr::join_by(seqnames==seqnames, site>=start, site<=end)) |> 
+  dplyr::rename(start = start.x, end = end.x, strand = strand.x, 
+                start_gene = start.y, end_gene = end.y, strand_gene = strand.y) |> 
+  group_by(seqnames,start,end) |> 
+  dplyr::mutate(tx_len=ifelse(is.na(tx_len), 0, tx_len)) |> 
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() 
+
+
+# There are around 7,086  sites which still can't be joined
+# where 6,508 sites came from "ELSE" genes. annotated_hypoxia_Hela_temp_na |> dplyr::filter(is.na(gene_name))
+# Need to check from the other transcript version. Not only the longest.
+# However, if it is joined with several genes, take the longest tx_len.
+annotated_hypoxia_Hela_temp_na2 <- 
+  annotated_hypoxia_Hela_temp_na |> 
+  dplyr::filter(is.na(gene_name)) |> 
+  dplyr::select(c(seqnames,start,end,strand,gene,meth_case,meth_control,site)) |> dplyr::left_join(  
+    human_Tx_data |> 
+      dplyr::select(seqnames, start, end, strand, gene_name, gene_type, tx_name,tx_len,width,  utr5_len, utr3_len) |> 
+      dplyr::rename(tx_id=tx_name),
+    by=dplyr::join_by(seqnames==seqnames, site>=start, site<=end)
+  )|> 
+  dplyr::rename(start = start.x, end = end.x, strand = strand.x, 
+                start_gene = start.y, end_gene = end.y, strand_gene = strand.y) |> 
+  group_by(seqnames,start,end) |> 
+  dplyr::mutate(tx_len=ifelse(is.na(tx_len), 0, tx_len)) |> 
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() 
+# Still 6077 sites not joind! annotated_hypoxia_Hela_temp_na2 |> dplyr::filter(is.na(start_gene))  
+# detail 
+# annotated_hypoxia_Hela_temp_na2 |> dplyr::filter(is.na(start_gene)) |> mutate(flag = case_when(meth_case==0 ~ "control", meth_control==0 ~ "case", .default= "both")) |> group_by(flag) |> count()
+
+dplyr::bind_rows(annotated_hypoxia_Hela |> dplyr::filter(!is.na(start_gene)), 
+                 )
+
+temp <- annotated_hypoxia_Hela_temp_na |> 
+  dplyr::filter(!is.na(gene_name)) |> 
+  dplyr::bind_rows(annotated_hypoxia_Hela_temp_na2) |> 
+  dplyr::mutate(gene=ifelse(!is.na(start_gene) & gene!=gene_name, gene_name, gene)) |> 
+  dplyr::select(c(seqnames, start, end, strand, gene, meth_case, meth_control, gene_type, tx_id, width, start_gene, end_gene, strand_gene))
+
+
+# Final annotation
+annotated_hypoxia_Hela <- dplyr::bind_rows(annotated_hypoxia_Hela |> dplyr::filter(!is.na(start_gene)), 
+                 temp) |> 
+  dplyr::arrange(seqnames,start,end)
+
+
+# All methylation data if it's available has minimum of 10% 
+min(annotated_hypoxia_Hela |> dplyr::filter(meth_case!=0) |> pull(meth_case))
+min(annotated_hypoxia_Hela |> dplyr::filter(meth_control!=0) |> pull(meth_control))
+
+# Buffer
+temp_annotated_hypoxia_Hela <- annotated_hypoxia_Hela
+
+
+
+annotated_hypoxia_Hela <- temp_annotated_hypoxia_Hela
+# Since we want to know the promoters, we drop the unkonwn start_gene sites
+annotated_hypoxia_Hela <- annotated_hypoxia_Hela |> dplyr::filter(!is.na(start_gene))
+
+```
+
+```{r}
+
+case_filtered <- annotated_hypoxia_Hela |> dplyr::filter(meth_case!=0) |> dplyr::select(seqnames, start) 
+control_filtered <- annotated_hypoxia_Hela |> dplyr::filter(meth_control!=0) |> dplyr::select(seqnames, start)
+
+venn_hel_data <- list(
+  control = paste0(case_filtered$seqnames,"_",case_filtered$start),
+  hypoxia = paste0(control_filtered$seqnames,"_", control_filtered$start)
+)
+
+
+ggvenn::ggvenn(
+  venn_hel_data, 
+  fill_color = c("#0073C2FF","#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4, auto_scale = TRUE
+  )
+```
+
+
+
+```{r}
+
+plot_data <- annotated_hypoxia_Hela |> 
+  dplyr::select(meth_case, meth_control, gene_type) |> 
+  tidyr::pivot_longer(cols=c(meth_case, meth_control), names_to='data', values_to='m6A_rate') 
+ggplot(data = plot_data, mapping = aes(x=data, y=m6A_rate, fill=data)) + 
+       geom_violin(alpha=0.5, position = position_dodge(width = .75),size=1,color=NA, legend=FALSE) +
+      ggsignif::stat_signif(comparison=list(c("meth_case", "meth_control")),map_signif_level = TRUE ) +
+       geom_boxplot(notch = TRUE,  outlier.size = -1, lwd=1, alpha = 0.5,show.legend = F, width = 0.3) +
+      # geom_point( shape = 21,size=2, position = position_jitterdodge(), color="black",alpha=1)+
+       # ggbeeswarm::geom_quasirandom(shape = 21,size=0.5, dodge.width = .75, alpha=.2,show.legend = F)+
+       theme_minimal()+
+       ylab(  c("m6A level")  )  +
+       xlab(  c("Condition")  )  +
+       rremove("legend.title")+
+       theme(#panel.border = element_rect(colour = "black", fill=NA, size=2),
+             legend.position = "none")+
+       font("xylab",size=15)+  
+       font("xy",size=15)+ 
+       font("xy.text", size = 15) +  
+       font("legend.text",size = 15)+
+       guides(fill = guide_legend(override.aes = list(alpha = 1,color="black"))) 
+```
+
+
+```{r}
+metagene_data <- annotated_hypoxia_Hela |> 
+  dplyr::left_join(human_Tx_data_longest |> 
+                      dplyr::select(tx_id, utr5_len, utr3_len), by=dplyr::join_by(tx_id))
+```
+
+
+
+```{r}
+metagene_data_mrna <- metagene_data |> 
+  # somehow there are sties which don't have utr3_len
+  dplyr::filter(utr5_len > 0 & utr3_len > 0 & ((start >= start_gene & end<=end_gene & strand_gene == "+") | (start <= start_gene & end>=end_gene & strand_gene == "-")) ) |> 
+  dplyr::mutate(cds_start = ifelse(strand_gene == "+", start_gene + utr5_len, start_gene - utr5_len),
+                utr3_start = ifelse(strand_gene == "+", end_gene - utr3_len, end_gene + utr3_len)) |> 
+  dplyr::mutate(pos_flag = ifelse(strand_gene == "+", 
+                                  case_when(start < cds_start ~ "5UTR",
+                                            start >= cds_start & start < utr3_start ~ "CDS",
+                                            start >= utr3_start ~ "3UTR"),
+                                  case_when(start > cds_start ~ "5UTR", 
+                                            start <= cds_start & start > utr3_start ~ "CDS",
+                                            start <= utr3_start ~ "3UTR"))) |> 
+  dplyr::mutate(pos_fraction = ifelse(strand_gene == "+",
+                                      case_when(pos_flag == "5UTR" ~ (start-start_gene)/utr5_len, 
+                                                pos_flag == "3UTR" ~ (start-utr3_start)/utr3_len,
+                                                pos_flag == "CDS" ~ (start-cds_start)/(utr3_start-cds_start)),
+                                      
+                                      case_when(pos_flag == "5UTR" ~ (start_gene-start)/utr5_len,
+                                                pos_flag == "3UTR" ~ (utr3_start-start)/utr3_len,
+                                                pos_flag == "CDS" ~ (cds_start-start)/(utr3_start-cds_start))
+                                      ) )  #923923   924038 924432
+
+# check. should be empty
+metagene_data_mrna |>  dplyr::filter(pos_fraction > 1 | pos_fraction < 0) # max = 1, min = 0
+
+metagene_data_mrna <- metagene_data_mrna |>
+  mutate(pos = case_when(pos_flag == "5UTR" ~ pos_fraction,
+                         pos_flag == "CDS" ~ pos_fraction*5 + 1,
+                         pos_flag == "3UTR" ~ pos_fraction*5 + 1 + 5 )) # max = 11, min = 0
+```
+
+```{r}
+
+
+metagene_nonmRNA_data <- metagene_data |> 
+  dplyr::filter(utr5_len == 0 | utr3_len == 0 & ((start >= start_gene & end<=end_gene & strand_gene == "+") | (start <= start_gene & end>=end_gene & strand_gene == "-")) ) |> 
+  dplyr::mutate(pos_fraction = ifelse(strand_gene == "+", (start-start_gene)/width, (start_gene-start)/width)) 
+
+metagene_nonmRNA_data |>  dplyr::filter(pos_fraction > 1 | pos_fraction < 0) # max = 1, min = 0
+```
+
+
+
+
+```{r}
+box_label <- as_tibble(data.frame(cut_pos = c(0, 1, 6, 11), y = c(1,1,1,1)))
+box_label_plot <- ggplot(data = box_label, mapping = aes(x = cut_pos, y = y)) + 
+  geom_segment(aes(x = 0, xend = 11, y = 0.5, yend=0.5)) +
+  geom_rect(mapping=aes(xmin=1, xmax=6, ymin=0, ymax=1), fill = "gray", color = "black") +
+  geom_text(mapping = aes(x = 0.5, y = 0.5, vjust=-0.05, label = "5'UTR")) +
+  geom_text(mapping = aes(x = 3.5, y = 0.5, vjust=-0.05, label = "CDS")) +
+  geom_text(mapping = aes(x = 8.5, y = 0.5, vjust=-0.05, label = "3'UTR")) +
+  theme_minimal() + 
+  ylab(  c("")  )  +
+  scale_y_continuous(breaks = pretty(c(0:1), n = 2)) +
+  #eliminates background, gridlines, and chart border
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y.left = element_text(color = "white"),
+    axis.ticks.y=element_blank(),
+    axis.title.x=element_blank(),
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank()
+  )
+  #draws x and y axis line
+  theme(axis.line = element_line(color = 'black')) +
+       font("xylab",size=15)+  
+       font("xy",size=15)+ 
+       font("xy.text", size = 15) +  
+       font("legend.text",size = 15)+
+  rremove("legend.title")
+
+mrna_plot_data <- metagene_data_mrna |> dplyr::mutate(flag = case_when(meth_case == 0 ~ "control",
+                                              meth_control == 0 ~ "case",
+                                              .default = "both"))
+mrna_meta_plot <- ggplot(data = mrna_plot_data, mapping = aes(x = pos)) + 
+  # geom_density() +
+  geom_density(data = mrna_plot_data , mapping = aes(color = flag),show_guide=FALSE)+
+  stat_density(data = mrna_plot_data , aes(colour=flag), 
+               geom="line",position="identity") + 
+  geom_vline(xintercept = c(1, 6), linetype = "dashed", color = "gray") +
+  theme_bw() +
+  #eliminates background, gridlines, and chart border
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(), 
+    axis.title.x=element_blank(),
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank(),
+    legend.position="bottom"
+  ) +
+       font("xylab",size=15)+  
+       font("xy",size=15)+ 
+       font("xy.text", size = 15) +  
+       font("legend.text",size = 15)+
+  xlim(0,11) +
+  #draws x and y axis line
+  theme(axis.line = element_line(color = 'black')) +
+  ylab(  c("Density")  )  +
+  rremove("legend.title")
+
+ggarrange(mrna_meta_plot, box_label_plot, ncol = 1, nrow = 2, heights = c(10, 1))
+
+```
+Next we would like to know a specific gene which is heavily modified when exposed in hypoxia. according to: https://ncbi.nlm.nih.gov/pmc/articles/PMC5558913/#:~:text=Effect%20of%20hypoxia%20on%20cellular,breast%20cancer%20stem%20cell%20phenotypes
+MYC is one of those gene which is more stable in hypoxia condition. In terms of m6A, it is hypothesized that it should hav elower m6A level and potentially lots of 0s sites in case condition
+```{r}
+annotated_hypoxia_Hela |> dplyr::filter(gene=="MYC") #GLUT, JUN, MYC
+```
+
+
+```{r}
+library(Gviz)
+plot_tx <- makeTxDbFromUCSC( genome="hg38", tablename="knownGene", transcript_ids="ENST00000621592.8", url="http://genome.ucsc.edu/cgi-bin/")
+gtrack <- GenomeAxisTrack()
+dtrack_case <- DataTrack(GRanges(metagene_data_mrna |> dplyr::filter(gene=="MYC") |> dplyr::select(seqnames, start, end, strand, meth_case)),
+                    genome = "hg38", name = "Hypoxia m6A level", type = "h")
+dtrack_control <- DataTrack(GRanges(metagene_data_mrna |> dplyr::filter(gene=="MYC") |> dplyr::select(seqnames, start, end, strand, meth_control)),
+                    genome = "hg38", name = "Control m6A level", type = "h")
+ht1 <- HighlightTrack(trackList = list(dtrack_case, dtrack_control), col="white",
+                     start = c(127736231,  127737931,  127739331, 127740580), width = 550, chromosome = "chr8")
+grtrack <- GeneRegionTrack(
+    plot_tx,
+    chromosome = "chr8", start = 127736231, end = 127742951,
+    name = "",
+    shape = "smallArrow",
+    transcriptAnnotation = "symbol"
+)
+
+plotTracks(
+    list(ht1, grtrack, gtrack), start = 127736231, end = 127742951,
+    background.title = "white", col.axis="#808080", col.title="#808080", fontsize=14, cex=0.9
+)
+
+```
+
+
+```{r}
+tuning_summary <- read.csv("ray_results/fixed_tuning/results_summary.csv") |> 
+  dplyr::select(avg_val_loss, avg_val_control_pearson_corr, avg_val_case_pearson_corr, iterations_since_restore, starts_with("config.") )
+head(tuning_summary)
+
+tuning_summary |> 
+  dplyr::select(c(avg_val_loss, iterations_since_restore, starts_with("config."))) |> 
+  dplyr::rename(iter = iterations_since_restore, lr = config.lr, weight_decay = config.weight_decay,
+                first_filter = config.cnn_first_filter,
+                first_ks = config.cnn_first_kernel_size,
+                cnn_length = config.cnn_length,
+                other_filter = config.cnn_filter,
+                other_kernel_size = config.cnn_kernel_size,
+                bilstm_layer = config.bilstm_layer,
+                bilstm_hidden_size = config.bilstm_hidden_size,
+                first_fc_size = config.fc_size) |> 
+  dplyr::arrange(avg_val_loss) |> 
+  head(20) |> 
+  kableExtra::kbl(format= "latex",
+                  align="r") |> 
+  kableExtra::kable_minimal(full_width = F,  html_font = "Source Sans Pro")
+```
+
+
+
+
+
 
 Analysis what kind of gene which is has zero on control or zero in hypoxia and the intersect 
 ```{r}
@@ -686,10 +1090,10 @@ biovenn <- draw.venn(
 #hypoxia_HeLa
 #chr    start    end meth_case meth_control meth_diff direction    pvalue      fdr log_lik_ratio  log10pvalue label
 #chr1  907102 907102      66.1         38.2      27.9 Hypoxia   0.000999  0.00632     10.8    3.00   Up-regula…
-hela_1  |> filter(Chr == "chr1", Sites == 185038) # Ratio 0.42553 0.411662
-hela_2 |> filter(Chr == "chr1", Sites == 185038) # Ratio 0.33333 0.3214235
-hypox_hela_1 |> filter(Chr == "chr1", Sites == 185038) # Ratio 0.68182 NormeRatio 0.6509131
-hypox_hela_2 |> filter(Chr == "chr1", Sites == 185038) # Ratio 0.64706 NormeRatio 0.6290264	
+hela_1  |> dplyr::filter(Chr == "chr1", Sites == 185038) # Ratio 0.42553 0.411662
+hela_2 |> dplyr::filter(Chr == "chr1", Sites == 185038) # Ratio 0.33333 0.3214235
+hypox_hela_1 |> dplyr::filter(Chr == "chr1", Sites == 185038) # Ratio 0.68182 NormeRatio 0.6509131
+hypox_hela_2 |> dplyr::filter(Chr == "chr1", Sites == 185038) # Ratio 0.64706 NormeRatio 0.6290264	
 
 # Meean hypox hela 0.664
 # mean hela 0.42553 
@@ -721,7 +1125,7 @@ BStmp <- BSseq(chr = temp$Chr, pos = temp$Sites,
                M = M, Cov = Cov, sampleNames = c("hela_1","hela_2", "hypox_hela_1", "hypox_hela_2"))
 
 head(bsseq::getCoverage(BStmp, type = 'M'))
-#hela_1 |> filter(Acov==2221)
+#hela_1 |> dplyr::filter(Acov==2221)
 head(bsseq::getCoverage(BStmp, type = 'Cov'))
 
 colData <- DataFrame(condition = c("control","control","hypox","hypox"),
@@ -736,7 +1140,7 @@ bsseq_data_filtered = filter_loci_by_group_coverage(
     c('control' = 1, 'hypox' = 1))
 # Methylation matrix
 #head(bsseq::getCoverage(combined_BSseq_filtered, type = 'M'))
-#ef_1 |> filter(Acov==2221)
+#ef_1 |> dplyr::filter(Acov==2221)
 #head(bsseq::getCoverage(combined_BSseq_filtered, type = 'Cov'))
 #GenomicRanges::granges(combined_BSseq_filtered)
 
@@ -794,7 +1198,7 @@ BStmp <- BSseq(chr = temp$Chr, pos = temp$Sites,
                M = M, Cov = Cov, sampleNames = c("mef_1","mef_2", "hs_mef_1", "hs_mef_2"))
 
 head(bsseq::getCoverage(BStmp, type = 'M'))
-#mef_1 |> filter(Acov==2221)
+#mef_1 |> dplyr::filter(Acov==2221)
 head(bsseq::getCoverage(BStmp, type = 'Cov'))
 
 colData <- DataFrame(condition = c("control","control","hs","hs"),
@@ -809,7 +1213,7 @@ bsseq_data_filtered = filter_loci_by_group_coverage(
   c('control' = 1, 'hs' = 1))
 # Methylation matrix
 #head(bsseq::getCoverage(combined_BSseq_filtered, type = 'M'))
-#ef_1 |> filter(Acov==2221)
+#ef_1 |> dplyr::filter(Acov==2221)
 #head(bsseq::getCoverage(combined_BSseq_filtered, type = 'Cov'))
 #GenomicRanges::granges(combined_BSseq_filtered)
 
@@ -827,7 +1231,7 @@ diff_gr_hs
 diff_df_hs <- as.tibble(as.data.frame(diff_hdiff_gr_hss_mef))
 # diff_hs_mef |> inner_join(heat_shock_MEF, by = dplyr::join_by(seqnames==chr, start==start, end==end))
 dim(diff_hs_mef)
-diff_hs_mef |> filter(fdr<0.05)
+diff_hs_mef |> dplyr::filter(fdr<0.05)
 ```
 
 Results are smaller? 
@@ -1025,16 +1429,16 @@ head(annotated_heat_shock_MEF)
 #ENSEMBL
 # Hypox related gene
 # Heat Shock related gene
-annotated_hypoxia_Hela |> filter(str_detect(gene_name, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
+annotated_hypoxia_Hela |> dplyr::filter(str_detect(gene_name, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
                                  gene_biotype=="protein_coding", label!="Unchanged m6A")
-annotated_hypoxia_Hela |> filter(str_detect(gene_name, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
+annotated_hypoxia_Hela |> dplyr::filter(str_detect(gene_name, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
                                  gene_biotype=="protein_coding", label!="Unchanged m6A")
 
 
 
-annotated_heat_shock_MEF |> filter(str_detect(gene_name, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
+annotated_heat_shock_MEF |> dplyr::filter(str_detect(gene_name, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
                                  gene_biotype=="protein_coding", label!="Unchanged m6A")
-annotated_heat_shock_MEF |> filter(str_detect(gene_name, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
+annotated_heat_shock_MEF |> dplyr::filter(str_detect(gene_name, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
                                  gene_biotype=="protein_coding", label!="Unchanged m6A")
 ```
 Seems like heatshock regulated gene are dynamics?
@@ -1046,16 +1450,16 @@ Seems like heatshock regulated gene are dynamics?
 # Hypox related gene
 # Heat Shock related gene
 
-dynamic_hypo_data_hypo <- annotated_hypoxia_Hela |> filter(str_detect(gene_id, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
+dynamic_hypo_data_hypo <- annotated_hypoxia_Hela |> dplyr::filter(str_detect(gene_id, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
                                  label!="Unchanged m6A")
-dynamic_hs_data_hypo <- annotated_hypoxia_Hela |> filter(str_detect(gene_id, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
+dynamic_hs_data_hypo <- annotated_hypoxia_Hela |> dplyr::filter(str_detect(gene_id, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
                                  label!="Unchanged m6A")
 
 
 
-dynamic_hypo_data_hs <- annotated_heat_shock_MEF |> filter(str_detect(gene_id, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
+dynamic_hypo_data_hs <- annotated_heat_shock_MEF |> dplyr::filter(str_detect(gene_id, "(?i)^(HIF|EPAS|VEGFA|EGLN3|IRS3)"), 
                                  label!="Unchanged m6A")
-dynamic_hs_data_hs <- annotated_heat_shock_MEF |> filter(str_detect(gene_id, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
+dynamic_hs_data_hs <- annotated_heat_shock_MEF |> dplyr::filter(str_detect(gene_id, "(?i)^(HSF|HSP|BAG3|DNAJ)"), 
                                  label!="Unchanged m6A")
 
 head(dynamic_hypo_data_hypo)
@@ -1071,12 +1475,12 @@ What kind of annotation that we need to use?
 
 ```{r}
 #NCBI
-hypo_genes_hypo <- dynamic_hypo_data_hypo |> filter(gene_biotype=="mRNA", label!="Unchanged m6A") |> distinct(gene_id) |> pull()
-hs_genes_hypo <- dynamic_hs_data_hypo |> filter(gene_biotype=="mRNA", label!="Unchanged m6A") |> distinct(gene_id) |> pull()
+hypo_genes_hypo <- dynamic_hypo_data_hypo |> dplyr::filter(gene_biotype=="mRNA", label!="Unchanged m6A") |> distinct(gene_id) |> pull()
+hs_genes_hypo <- dynamic_hs_data_hypo |> dplyr::filter(gene_biotype=="mRNA", label!="Unchanged m6A") |> distinct(gene_id) |> pull()
 
 
 plot_data <- annotated_hypoxia_Hela |> 
-  filter(label!="Unchanged m6A") |> 
+  dplyr::filter(label!="Unchanged m6A") |> 
   select(gene_id,  chr.x, start.x, meth_control, meth_case) |>
   pivot_longer(cols=starts_with('meth_'), names_to='group') |> 
   rowwise() |> 
@@ -1084,16 +1488,16 @@ plot_data <- annotated_hypoxia_Hela |>
   ungroup()
 
 temp_hypo <- plot_data |> 
-  filter(gene_id %in% c(hypo_genes_hypo)) |> 
+  dplyr::filter(gene_id %in% c(hypo_genes_hypo)) |> 
   mutate(note = "hypo_genes")
 temp_hs <- plot_data |> 
-  filter(gene_id %in% c(hs_genes_hypo)) |> 
+  dplyr::filter(gene_id %in% c(hs_genes_hypo)) |> 
   mutate(note = "hs_genes")
 
 plot_data <- rbind(temp_hypo, temp_hs)
 
 options(repr.plot.width = 10, repr.plot.height =2) 
-ggplot(plot_data |> filter(note=="hypo_genes"), aes(x= group, y = value, fill=group)) +  
+ggplot(plot_data |> dplyr::filter(note=="hypo_genes"), aes(x= group, y = value, fill=group)) +  
   geom_jitter(alpha=0.5, width=0.1) +
   geom_boxplot(width=0.1) +  ggtitle(label = "Distribution of m6A rate of Hypo Genes in Hypoxia Condition") +
   facet_grid(cols = vars(gene_id), rows = vars(note)) + 
@@ -1102,7 +1506,7 @@ ggplot(plot_data |> filter(note=="hypo_genes"), aes(x= group, y = value, fill=gr
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
         legend.position = "bottom") + 
   guides(fill = FALSE) 
-ggplot(plot_data |> filter(note=="hs_genes"), aes(x= group, y = value, fill=group)) +  
+ggplot(plot_data |> dplyr::filter(note=="hs_genes"), aes(x= group, y = value, fill=group)) +  
   geom_jitter(alpha=0.5, width=0.1) +
   geom_boxplot(width=0.1) +  ggtitle(label = "Distribution of dynamic m6A rate of HS Genes in Hypoxia Condition") +
   facet_wrap(ncol =4, nrow=4, facets=vars(gene_id)) + 
@@ -1158,6 +1562,9 @@ plotTracks(
   chromosome = as.character(unique(seqnames(gr_m6A)))
 )
 ```
+
+
+
 
 ```{r}
 # txdb <- loadDb(samplefile)

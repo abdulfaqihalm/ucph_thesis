@@ -265,7 +265,7 @@ def main(num_samples=50, max_num_epochs=50, gpus_per_trial=1, args=None):
             scheduler=scheduler,
             reuse_actors=False,
             num_samples=num_samples,
-            max_concurrent_trials=4,
+            max_concurrent_trials=5,
         ),
         param_space=config,
         run_config=RunConfig(storage_path=args.tune_output_path,
@@ -294,7 +294,7 @@ if __name__ == "__main__":
 
     python tune_dual.py --data_folder /binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs --embedding gene2vec --embedding_file data/embeddings/gene2vec/double_outputs --tune_output_path /binf-isilon/renniegrp/vpx267/ucph_thesis/ray_results --tune_output_folder_name gene2vec --num_samples 100 --max_num_epochs 15
 
-    python tune_dual.py --data_folder /binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs --embedding one-hot --tune_output_path /binf-isilon/renniegrp/vpx267/ucph_thesis/ray_results --tune_output_folder_name fixed_tuning --num_samples 2 --max_num_epochs 16
+    python tune_dual.py --data_folder /binf-isilon/renniegrp/vpx267/ucph_thesis/data/dual_outputs --embedding one-hot --tune_output_path /binf-isilon/renniegrp/vpx267/ucph_thesis/ray_results --tune_output_folder_name fixed_tuning --num_samples 50 --max_num_epochs 16
     """
     parser = ArgumentParser(
         description="Running Training and Testing"
