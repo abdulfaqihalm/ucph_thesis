@@ -12,22 +12,20 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r cars}
 library(universalmotif)
 library(Biostrings)
-library(reticulate)
-np <- import("numpy")
 library(tidyverse)
 library(ggplot2)
-library(gridExtra)
+library(gridExtra) # For custom grid doing combination in ggplot
 library(grid)
 library(patchwork)  # Ensure this library is loaded for inset_element
 library(ggrepel)
 library(latex2exp)
-library(ggseqlogo)
-library(parallel)
-library(doMC)
-library(stats)
-library(foreach)
+library(ggseqlogo) # for plotting custom motifs plot in ggplot inhereted object
+library(parallel) # parallel computing for looping and glmnet
+library(doMC) # parallel computing for looping and glmnet
+library(foreach) # together with doMC
+library(stats) # For correlation value in ggplot
 library(ggpubr)
-library(glmnet)
+library(glmnet) # for elastic net
 library(ggExtra)   # marginal plots
 library(ggtext)    # color your text
 library(paletteer) # get all the color palettes
@@ -35,34 +33,237 @@ library(scales)    # helper functions from ggplot2
 library(ggpointdensity) # for point densitiy plot 
 library(viridis) # for graph scale color
 library(ggpubr) # for stat cor in graph
+library(rjson) 
+library(ggimage) # for geom_image
+library(lmtest) # for robust standard error
+library(ggcorrplot) # for correlation plot
+
+
+library(reticulate) # For Python packages
+np <- import("numpy")
 ```
 
 CONSTANTS 
 ```{r}
 NUM_FILTERS <- 24
 NUM_FOLDS <- 5
+START_SLICE <- 250
+END_SLICE <- 750
 ```
 
 
-```{r}
-pred_df <- NULL
 
-for (fold in 1:NUM_FOLDS) {
-  temp <- read_csv(paste0("data/outputs/predictions/validation_",fold,"th_fold_dual_outputs_m6A_info-no_promoter-False_fixed_tune.csv")) |> 
-    mutate(fold = fold)
-  pred_df <- dplyr::bind_rows(pred_df, temp)
+Here, we load the required data: the prediction data from the model ("validation_",fold,"th_fold_dual_outputs_m6_info-no_promoter-False_MOTIF.csv"), and the sequence data for the the validation process of the model () 
+```{r}
+seq_test_list <- list()
+valid_data_list <- list()
+for(fold in 1:NUM_FOLDS)
+{
+  seq_test_list[[fold]] <- RNAStringSet(Biostrings::readDNAStringSet(paste0("data/double_outputs/motif_fasta_test_SPLIT_",fold,".fasta")))
+  valid_data_list[[fold]] <- read_csv(paste0("data/outputs/predictions/validation_",fold,"th_fold_dual_outputs_m6A_info-no_promoter-False_fixed_tune.csv"), show_col_types = FALSE)
 }
 
-head(pred_df)
+all_valid_data_list <- NULL
+
+for (fold in c(1:NUM_FOLDS)){
+  all_valid_data_list <- dplyr::bind_rows(all_valid_data_list, valid_data_list[[fold]] |> 
+                                            mutate(fold = fold))
+
+}
 ```
+
+
+## Loading annotation
+Here is the code that used for annotation process. This is also the block code that is used for the test_split process. I tried to load the json which is easy to laod with the pandas package in python but it is hard to do in R (somehow). Thus I decided to include repetitive blocks code that is already in "train_test_split.R" just to get the annotation data and the split gorup.  
+```{r}
+library(GenomicFeatures)
+DATA_FOLDER <- '/Users/faqih/Documents/UCPH/Thesis/code/data/'
+data_path <- '/Users/faqih/Documents/UCPH/Thesis/code/data/'
+# ===== TxD Related ===== #
+# Get annotation to the txDb (including the validity checking)
+human_txDb <- makeTxDbFromGFF(paste0(DATA_FOLDER, 'annot_ref/gencode.v45.annotation.gtf'))
+# Get from rtracklayer to extract metadata
+gtf <- rtracklayer::import.gff(con=paste0(DATA_FOLDER, 'annot_ref/gencode.v45.annotation.gtf'), 
+                               format="gtf", genome="GRCh38.p14")
+
+metadata <- as.tibble(elementMetadata(gtf)[ , c("gene_id", "gene_name", 
+                                                "gene_type", "transcript_id", 
+                                                "transcript_name")])
+metadata <- na.omit(metadata)
+metadata <- metadata[!duplicated(metadata), ]
+
+# Tx
+human_Tx <- transcripts(human_txDb)
+# Transcript length summary
+human_Tx_length <- transcriptLengths(human_txDb,
+                                     with.cds_len=TRUE, with.utr5_len=TRUE, with.utr3_len=TRUE)
+
+
+human_Tx_data <- S4Vectors::merge(human_Tx, metadata, 
+                                  by.x = 'tx_name', by.y = 'transcript_id', all.x=TRUE)
+human_Tx_data <- S4Vectors::merge(human_Tx_data, human_Tx_length |> 
+                                    dplyr::select(tx_name, nexon, tx_len,cds_len, utr5_len, utr3_len), 
+                                  by.x = 'tx_name', by.y = 'tx_name', all.x=TRUE)
+
+# Filtering the longest transcript (width) only for each gene
+# it still contain numbers of non mRNA gene: i.e. rRNA, tRNA, Mt_RNA, etc.
+human_Tx_data_longest <- human_Tx_data |> 
+  dplyr::group_by(gene_id) |> 
+  dplyr::filter(width == max(width)) |> 
+  # Since several transcripts could have the same start and end.
+  # need to filter by tx_len (CDS + UTRs)
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() |> 
+  # STILL CONTAIN DUPLICATE. CHECK: human_Tx_data_longest |>  dplyr::inner_join(human_Tx_data_longest |> dplyr::select(gene_name, gene_type) |> group_by(gene_name) |> dplyr::summarise(count = dplyr::n()) |> dplyr::filter(count>1), by=c("gene_name")) |> arrange(gene_name,tx_id)
+  # Thus add filter below
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(cds_len == max(cds_len)) |> 
+  dplyr::ungroup() |> 
+  # Arbitary filter by tx_name since they already have the save width, cds len
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(tx_name == max(tx_name)) |> 
+  dplyr::ungroup() |> 
+  dplyr::group_by(gene_name) |>
+  dplyr::filter(gene_id == max(gene_id)) |> 
+  dplyr::ungroup() |> 
+  dplyr::select(!c(tx_id)) |> 
+  dplyr::rename('tx_name'='transcript_name', 'tx_id'='tx_name') |> 
+  dplyr::relocate(c('tx_id','tx_name','nexon','tx_len'), 
+                  .after = c('strand'))
+# FILTERING PSEUDOGENE, MISC, VAULT, TO BE CONFIRMED (TEC), ANTIBODY GENES 
+human_Tx_data_longest |> dplyr::filter(!grepl('pseudogene|misc_RNA|vault|TR_|IG|TEC|artifact', gene_type)) |> dplyr::distinct(gene_type)
+
+### Sanity chec. Should be zero! 
+human_Tx_data_longest |>  dplyr::inner_join(human_Tx_data_longest |> dplyr::select(gene_name, gene_type) |> group_by(gene_name) |> dplyr::summarise(count = dplyr::n()) |> dplyr::filter(count>1), by=c("gene_name")) |> arrange(gene_name,tx_id)
+# NOTE: "ELSE" is not known gene from GLORI pipeline
+
+
+
+# ===== Joining Hypoxia with Annot ===== #
+#Here we want to know the longest transcript which annotated from GLORI
+#Expected several NA gene_type from known gene i.e. LOC112268063
+annotated_hypoxia_Hela <- hela_hypoxia_intrsct |> 
+  dplyr::left_join(human_Tx_data_longest |> 
+                     dplyr::select(gene_name, gene_type, tx_id, width, start, end, strand),
+                                                                   by=dplyr::join_by(gene==gene_name)) |>
+  dplyr::rename(start = start.x, end = end.x, strand = strand.x, 
+                start_gene = start.y, end_gene = end.y, strand_gene = strand.y)
+  
+
+# We want to still annotate several sites which might not joined with the longest transcript data 
+# to get the promoters.
+# Note: the non-joined sites are those which have gene_name == "ELSE" and other genes which somehow couldn't be found 
+# from the TxDb. There are ~33,238 stes: annotated_hypoxia_Hela |> dplyr::filter(is.na(start_gene))
+# Other named gene from GLORI migh not be joined due to change in the name. Hence, we will join it by location and take
+# the longest transcript for each gen
+annotated_hypoxia_Hela_temp_na <- (annotated_hypoxia_Hela |> dplyr::filter(is.na(start_gene)) |> 
+     dplyr::select(!c(gene_type, tx_id, width, start_gene, end_gene, strand_gene)) |> dplyr::mutate(site=start)) |> 
+  dplyr::left_join(human_Tx_data_longest |> 
+                     #dplyr::filter(!grepl('vault|TEC|artifact', gene_type)) |> 
+                     dplyr::select(seqnames, start, end, strand, gene_name, gene_type, tx_id,tx_len,width, utr5_len, utr3_len),
+                   by=dplyr::join_by(seqnames==seqnames, site>=start, site<=end)) |> 
+  dplyr::rename(start = start.x, end = end.x, strand = strand.x, 
+                start_gene = start.y, end_gene = end.y, strand_gene = strand.y) |> 
+  group_by(seqnames,start,end) |> 
+  dplyr::mutate(tx_len=ifelse(is.na(tx_len), 0, tx_len)) |> 
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() 
+
+
+# There are around 7,086  sites which still can't be joined
+# where 6,508 sites came from "ELSE" genes. annotated_hypoxia_Hela_temp_na |> dplyr::filter(is.na(gene_name))
+# Need to check from the other transcript version. Not only the longest.
+# However, if it is joined with several genes, take the longest tx_len.
+annotated_hypoxia_Hela_temp_na2 <- 
+  annotated_hypoxia_Hela_temp_na |> 
+  dplyr::filter(is.na(gene_name)) |> 
+  dplyr::select(c(seqnames,start,end,strand,gene,meth_case,meth_control,site)) |> dplyr::left_join(  
+    human_Tx_data |> 
+      dplyr::select(seqnames, start, end, strand, gene_name, gene_type, tx_name,tx_len,width,  utr5_len, utr3_len) |> 
+      dplyr::rename(tx_id=tx_name),
+    by=dplyr::join_by(seqnames==seqnames, site>=start, site<=end)
+  )|> 
+  dplyr::rename(start = start.x, end = end.x, strand = strand.x, 
+                start_gene = start.y, end_gene = end.y, strand_gene = strand.y) |> 
+  group_by(seqnames,start,end) |> 
+  dplyr::mutate(tx_len=ifelse(is.na(tx_len), 0, tx_len)) |> 
+  dplyr::filter(tx_len == max(tx_len)) |> 
+  dplyr::ungroup() 
+# Still 6077 sites not joind! annotated_hypoxia_Hela_temp_na2 |> dplyr::filter(is.na(start_gene))  
+# detail 
+# annotated_hypoxia_Hela_temp_na2 |> dplyr::filter(is.na(start_gene)) |> mutate(flag = case_when(meth_case==0 ~ "control", meth_control==0 ~ "case", .default= "both")) |> group_by(flag) |> count()
+
+dplyr::bind_rows(annotated_hypoxia_Hela |> dplyr::filter(!is.na(start_gene)), 
+                 )
+
+temp <- annotated_hypoxia_Hela_temp_na |> 
+  dplyr::filter(!is.na(gene_name)) |> 
+  dplyr::bind_rows(annotated_hypoxia_Hela_temp_na2) |> 
+  dplyr::mutate(gene=ifelse(!is.na(start_gene) & gene!=gene_name, gene_name, gene)) |> 
+  dplyr::select(c(seqnames, start, end, strand, gene, meth_case, meth_control, gene_type, tx_id, width, start_gene, end_gene, strand_gene))
+
+
+# Final annotation
+annotated_hypoxia_Hela <- dplyr::bind_rows(annotated_hypoxia_Hela |> dplyr::filter(!is.na(start_gene)), 
+                 temp) |> 
+  dplyr::arrange(seqnames,start,end)
+
+
+# All methylation data if it's available has minimum of 10% 
+min(annotated_hypoxia_Hela |> dplyr::filter(meth_case!=0) |> pull(meth_case))
+min(annotated_hypoxia_Hela |> dplyr::filter(meth_control!=0) |> pull(meth_control))
+
+
+# Since we want to know the promoters, we drop the unkonwn start_gene sites
+annotated_hypoxia_Hela <- annotated_hypoxia_Hela |> dplyr::filter(!is.na(start_gene))
+
+```
+Continuing above, we use the same splitting process as the test_split process with the same set.seed() value to get the reproducible split (s)
+```{r}
+df <- annotated_hypoxia_Hela
+set.seed(123123)
+#allocate a group randomly to each gene_id, not position
+df$id <- c(1:dim(df)[1])
+gene_group <- sample(1:5,length(unique(df$gene)),replace=T)
+names(gene_group) <- unique(df$gene)
+df$gene_group <- gene_group[as.vector(df$gene)]
+
+# Sanity Check 
+# Grouping by sites check - expected uneven dist. since several genes might have higher number of sites than others
+print(df |> group_by(gene_group) |> count())
+# Grouping by distinct gene check - expected even number
+print(df |> 
+        dplyr::select(gene, gene_group) |> 
+        dplyr::distinct() |>
+        dplyr::group_by(gene_group) |> count())
+
+
+
+#create the five folds stratified by gene_group
+#all of the groups consiste of roughly equal number of gene
+split_tibble <- df |> rsample::group_vfold_cv(group = gene_group)
+data_split_TEST <- list()
+for (i in 1:NUM_FOLDS){
+  
+data_split_TEST[[i]] <- rsample::testing(split_tibble$splits[[i]]) 
+}
+```
+
+
+
+
+
+
+# Plot of Prediction Correlations
+Next we want to know the correlation plot of the predicted value from the model. We load the prediction data from the model output
 
 ```{r}
 
-temp_true <- pred_df |> dplyr::mutate(row_number = 1:n()) |>
+temp_true <- all_valid_data_list |> dplyr::mutate(row_number = 1:n()) |>
   tidyr::pivot_longer(cols = c(true_control, true_case), names_to = "treatment_flag", values_to = "true") |> 
   dplyr::mutate(treatment_flag = str_extract(treatment_flag, "(control|case)")) |> 
   dplyr::select(c(row_number,fold,treatment_flag, true))
-temp_pred <- pred_df |> dplyr::mutate(row_number = 1:n()) |>
+temp_pred <- all_valid_data_list |> dplyr::mutate(row_number = 1:n()) |>
   tidyr::pivot_longer(cols = c(pred_control, pred_case), names_to = "treatment_flag", values_to = "pred") |> 
   dplyr::mutate(treatment_flag = str_extract(treatment_flag, "(control|case)")) |> 
   dplyr::select(c(row_number,fold,treatment_flag, pred))
@@ -129,12 +330,168 @@ grid.arrange(extra_1, extra_2, left = textGrob("Prediction", rot = 90, vjust = 1
 
 ```
 
+Next, we want to know the redistribution m6A between hypoxia and normal. First we would like to plot the true distribution. Different with original GLORI paper, here we only employ a simpoe filter x>|0.1| for the dynamic m6A sites. To do that, we first map each of the location of the m6A sites into their respective gene and then located the region (whether 5UTR, CDS, and 3UTR) and the gene strands.  
+```{r}
+anno_pred_df <- list()
+for (i in 1:NUM_FOLDS) {
+  temp <- dplyr::bind_cols(data_split_TEST[[i]], all_valid_data_list |> dplyr::filter(fold==i) |> dplyr::select(!c(true_control, true_case)))
+    
+  temp <- temp |> dplyr::left_join(human_Tx_data_longest |> 
+                      dplyr::select(tx_id, utr5_len, utr3_len), by=dplyr::join_by(tx_id)) 
+   temp <- temp |> 
+  # somehow there are sties which don't have utr3_len
+  dplyr::filter(utr5_len > 0 & utr3_len > 0 & ((start >= start_gene & end<=end_gene & strand_gene == "+") | (start <= start_gene & end>=end_gene & strand_gene == "-")) ) |> 
+  dplyr::mutate(cds_start = ifelse(strand_gene == "+", start_gene + utr5_len, start_gene - utr5_len),
+                utr3_start = ifelse(strand_gene == "+", end_gene - utr3_len, end_gene + utr3_len)) |> 
+  dplyr::mutate(pos_flag = ifelse(strand_gene == "+", 
+                                  case_when(start < cds_start ~ "5UTR",
+                                            start >= cds_start & start < utr3_start ~ "CDS",
+                                            start >= utr3_start ~ "3UTR"),
+                                  case_when(start > cds_start ~ "5UTR", 
+                                            start <= cds_start & start > utr3_start ~ "CDS",
+                                            start <= utr3_start ~ "3UTR"))) |> 
+  dplyr::mutate(pos_fraction = ifelse(strand_gene == "+",
+                                      case_when(pos_flag == "5UTR" ~ (start-start_gene)/utr5_len, 
+                                                pos_flag == "3UTR" ~ (start-utr3_start)/utr3_len,
+                                                pos_flag == "CDS" ~ (start-cds_start)/(utr3_start-cds_start)),
+                                      
+                                      case_when(pos_flag == "5UTR" ~ (start_gene-start)/utr5_len,
+                                                pos_flag == "3UTR" ~ (utr3_start-start)/utr3_len,
+                                                pos_flag == "CDS" ~ (cds_start-start)/(utr3_start-cds_start))
+                                      ) )  #923923   924038 924432
+   
+   anno_pred_df[[i]] <- temp
+}
+```
+
 
 ```{r}
-ggplot(data = plot_pred_df, mapping = aes(x = true, y = pred)) + 
-  geom_point() +
-  ggMarginal(red_beard, type = "histogram", fill = "red")
-  facet_wrap(vars(fold,treatment_flag), ncol = 2) 
+box_label <- as_tibble(data.frame(cut_pos = c(0, 1, 6, 11), y = c(1,1,1,1)))
+box_label_plot <- ggplot(data = box_label, mapping = aes(x = cut_pos, y = y)) + 
+  geom_segment(aes(x = 0, xend = 11, y = 0.5, yend=0.5)) +
+  geom_rect(mapping=aes(xmin=1, xmax=6, ymin=0, ymax=1), fill = "gray", color = "black") +
+  geom_text(mapping = aes(x = 0.5, y = 0.5, vjust=-0.05, label = "5'UTR")) +
+  geom_text(mapping = aes(x = 3.5, y = 0.5, vjust=-0.05, label = "CDS")) +
+  geom_text(mapping = aes(x = 8.5, y = 0.5, vjust=-0.05, label = "3'UTR")) +
+  theme_minimal() + 
+  ylab(  c("")  )  +
+  xlim(0,11) +
+  scale_y_continuous(breaks = pretty(c(0:1), n = 2)) +
+  #eliminates background, gridlines, and chart border
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y.left = element_text(color = "white"),
+    axis.ticks.y=element_blank(),
+    axis.title.x=element_blank(),
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank()
+  )
+  #draws x and y axis line
+  theme(axis.line = element_line(color = 'black')) +
+       font("xylab",size=15)+  
+       font("xy",size=15)+ 
+       font("xy.text", size = 15) +  
+       font("legend.text",size = 15)+
+  rremove("legend.title")
+
+
+
+temp_ggplot <- list()
+for (i in 1:NUM_FOLDS){
+  print(i)
+  temp_plot <- anno_pred_df[[i]] |> 
+  dplyr::mutate(regulation_stat = case_when(
+    pred_case - pred_control >0.10 ~ "up-regulated",
+    pred_case - pred_control < -0.10 ~ "down-regulated",
+    .default = "no_change"
+  )) |> 
+  mutate(pos = case_when(pos_flag == "5UTR" ~ pos_fraction,
+                         pos_flag == "CDS" ~ pos_fraction*5 + 1,
+                         pos_flag == "3UTR" ~ pos_fraction*5 + 1 + 5 )) # max = 11, min = 0
+
+
+
+ p <- ggplot(data = temp_plot, mapping = aes(x = pos)) + 
+  # geom_density() +
+  geom_density(data = temp_plot , mapping = aes(color = regulation_stat),show_guide=FALSE)+
+  stat_density(data = temp_plot , aes(colour=regulation_stat), 
+               geom="line",position="identity") + 
+  scale_colour_manual(values = c( "down-regulated" = "red", "up-regulated" = "blue", "no_change"="gray")) +
+  geom_vline(xintercept = c(1, 6), linetype = "dashed", color = "gray") +
+  theme_bw() +
+  #eliminates background, gridlines, and chart border
+  theme( 
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(), 
+    axis.title.x=element_blank(),
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank(),
+    legend.position=c(0.9, 0.9)
+  ) +
+       font("xylab",size=15)+  
+       font("xy",size=15)+ 
+       font("xy.text", size = 15) +  
+       font("legend.text",size = 15)+
+  xlim(0,11) +
+  #draws x and y axis line
+  theme(axis.line = element_line(color = 'black')) +
+  ylab(  c("Density")  )  +
+  xlab(c("")) +
+  rremove("legend.title")
+ 
+ temp_ggplot[[i]] <- ggarrange(p, box_label_plot, ncol = 1, nrow = 2, heights = c(10, 1))
+}
+```
+TRUE VALUE DISTRIBUTION
+```{r}
+anno_pred_all_folds <- dplyr::bind_rows(anno_pred_df[[1]],anno_pred_df[[2]],anno_pred_df[[3]],anno_pred_df[[4]],anno_pred_df[[5]])
+
+temp_plot <- anno_pred_all_folds|> 
+  dplyr::mutate(regulation_stat = case_when(
+    meth_case - meth_control >0.10 ~ "up-regulated",
+    meth_case - meth_control < -0.10 ~ "down-regulated",
+    .default = "no_change"
+  )) |> 
+  mutate(pos = case_when(pos_flag == "5UTR" ~ pos_fraction,
+                         pos_flag == "CDS" ~ pos_fraction*5 + 1,
+                         pos_flag == "3UTR" ~ pos_fraction*5 + 1 + 5 )) # max = 11, min = 0
+
+
+
+ p <- ggplot(data = temp_plot, mapping = aes(x = pos)) + 
+  # geom_density() +
+  geom_density(data = temp_plot , mapping = aes(color = regulation_stat),show_guide=FALSE)+
+  stat_density(data = temp_plot , aes(colour=regulation_stat), 
+               geom="line",position="identity") + 
+  scale_colour_manual(values = c( "down-regulated" = "red", "up-regulated" = "blue", "no_change"="gray")) +
+  geom_vline(xintercept = c(1, 6), linetype = "dashed", color = "gray") +
+  theme_bw() +
+  #eliminates background, gridlines, and chart border
+  theme( 
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(), 
+    axis.title.x=element_blank(),
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank(),
+    legend.position=c(0.9, 0.9)
+  ) +
+       font("xylab",size=15)+  
+       font("xy",size=15)+ 
+       font("xy.text", size = 15) +  
+       font("legend.text",size = 15)+
+  xlim(0,11) +
+  #draws x and y axis line
+  theme(axis.line = element_line(color = 'black')) +
+  ylab(  c("Density")  )  +
+  xlab(c("")) +
+  rremove("legend.title")
+ ggarrange(p, box_label_plot, ncol = 1, nrow = 2, heights = c(10, 1))
 ```
 
 
@@ -144,7 +501,7 @@ ggplot(data = plot_pred_df, mapping = aes(x = true, y = pred)) +
 seq_list <- list()
 for(i in 1:NUM_FOLDS)
 {
-  seq_list[[i]] <- Biostrings::readDNAStringSet(paste0("/Users/faqih/Documents/UCPH/Thesis/code/data/double_outputs/motif_fasta_test_SPLIT_",i,".fasta"))
+  seq_list[[i]] <- Biostrings::readDNAStringSet(paste0("data/double_outputs/motif_fasta_test_SPLIT_",i,".fasta"))
 }
 
 seqs <- c(seq_list[[1]],seq_list[[2]],seq_list[[3]],seq_list[[4]],seq_list[[5]])
@@ -184,9 +541,12 @@ for (fold in 1:NUM_FOLDS){
     dna_ss <- RNAStringSet(sequences[[fold]][[paste0("filter_",filter)]])
     motif <- universalmotif::create_motif(dna_ss,
                               type="PWM",
-                              name= paste0("filter_",filter),
+                              name= paste0("fold_",fold,"_filter_",filter),
                               pseudocount = 1,
                               bkg = nt_freqs[c("A","C","G","U")])
+    #Saving plot for later usage
+    ggsave(filename = paste0("data/analysis/all_motif_figures/",motif@consensus,".png"),
+           plot = ggseqlogo::ggseqlogo(universalmotif::convert_type(motif,"ICM")@motif))
   
     temp[[filter]] <- motif
   }
@@ -213,139 +573,387 @@ for (fold in c(1:NUM_FOLDS)){
 
 
 
+TOMTOM match for all logos
+NOTE: You need to have MEMES tool installed on your machine
+```{r}
+check_meme_install()
+```
+
+
+```{r}
+# MEME Suite Software version meme-5.5.5 December 07, 2023
+# Database version Motif Databases (updated 13 Jan 2024)
+db_file <-"data/analysis/CISBP-RNA/Homo_sapiens.meme"
+# We force TOMTOM to work on non-RC since we expect that the nascent RNA will not be reverse-transcribed 
+tomtom_result <- memes::runTomTom(unlist(motList), database = db_file, thresh = 0.1, norc="")
+tomtom_mathed_result_df <- NULL
+for(i in 1:length(tomtom_result)){
+  if("best_match_altname" %in% colnames(tomtom_result[[i]])){
+    tomtom_mathed_result_df <- dplyr::bind_rows(tomtom_mathed_result_df, tomtom_result[[i]])
+  }
+}
+```
+
+Plot the matched motifs
+```{r}
+match_plot_list <- list()
+match_motif_df <- NULL
+for(i in 1:dim(tomtom_mathed_result_df)[1]){
+  temp_motif <- tomtom_mathed_result_df[i,"motif"][[1]]
+  temp_best_match <- tomtom_mathed_result_df[i,"best_match_motif"][[1]] # best_match based on the lowest e-value
+  temp_best_match@name <- str_extract(temp_best_match@altname, "[\\w\\-\\_]+") # match the first (human) altname
+  p <- universalmotif::view_motifs(c(temp_motif, temp_best_match)) + labs(title = paste0("e-val: ", tomtom_mathed_result_df[i,"best_match_eval"])) + theme(axis.title.y = element_blank()) 
+  match_plot_list[[i]] <- p 
+  
+  temp_df <- data.frame(filter_name = temp_motif@name, consensus = temp_motif@consensus,
+                        best_match_name = temp_best_match@name, best_match_consensus = temp_best_match@consensus)
+  match_motif_df <- dplyr::bind_rows(match_motif_df, temp_df)
+}
+
+gridExtra::grid.arrange(grobs = match_plot_list, ncol = 4, left = textGrob("bits", rot=90, gp = gpar(fontface = 8, fontsize = 14)))
+```
+
+
+
+# Plot CNN Filter logo with its TOMTOM match 
+
 ```{r}
 plot_list <- list() # Initialize an empty list to store ggplot objects
-
+best_match_ids <- tomtom_mathed_result_df |> pull(name)
 for (fold in 1:NUM_FOLDS) {
   plots <- list() # Temporary list to store plots for each fold
   for (filter in 1:NUM_FILTERS) {
     temp_mat <- convert_type(motList[[fold]][[filter]], 'ICM')@motif
+    
+    # Search for the match 
+    match <- ""
+    mot_id <- paste0("fold_",fold,"_filter_",filter)
+    if(mot_id %in% best_match_ids){
+      match <- paste0(tomtom_mathed_result_df |> dplyr::filter(name == mot_id) |> pull(best_match_altname))
+      match <-str_extract(match, "\\w+")
+    }
+    
     p <- ggseqlogo(temp_mat) + 
-      labs(title = paste("Fold", fold, "Filter", filter))
+      labs(title = paste("Filter", filter)) + 
+      ylab(match)
     plots[[filter]] <- p
   }
   # Combine all plots for the current fold
-  combined_plot <- do.call(gridExtra::grid.arrange, c(plots, ncol = 4))
+  combined_plot <- gridExtra::grid.arrange(grobs=plots, ncol = 4, top= textGrob(paste0("FOLD ", fold), gp = gpar(fontface = 8, fontsize = 16)),
+                                          )
   plot_list[[fold]] <- combined_plot
 }
 ```
 
-
-
+View motifs which is target of RMB15
 ```{r}
-# Searching for the motif
-seq_train_list <- list()
-seq_test_list <- list()
-valid_data_list <- list()
-for(fold in 1:NUM_FOLDS)
-{
-  seq_train_list[[fold]] <- RNAStringSet(Biostrings::readDNAStringSet(paste0("/Users/faqih/Documents/UCPH/Thesis/code/data/double_outputs/motif_fasta_train_SPLIT_",fold,".fasta")))
-  seq_test_list[[fold]] <- RNAStringSet(Biostrings::readDNAStringSet(paste0("/Users/faqih/Documents/UCPH/Thesis/code/data/double_outputs/motif_fasta_test_SPLIT_",fold,".fasta")))
-  valid_data_list[[fold]] <- read_csv(paste0("validation_",fold,"th_fold_dual_outputs_m6_info-no_promoter-False_MOTIF.csv"), show_col_types = FALSE)
+rbm15_stack <- c("UUUC", "UUUG", "UUUU")
+rbm15 <- universalmotif::create_motif(rbm15_stack)
+rbm15@name <- "RBM15"
+rbm15_align_df <- NULL
+u_rich_motifs <- c(motList[[5]][[24]],motList[[2]][[21]], motList[[4]][[23]],motList[[3]][[18]], motList[[1]][[18]], motList[[1]][[2]])
+rbm15_plot_list <- list()
+for (motif in u_rich_motifs){
+  p <- view_motifs(c(motif, rbm15), tryRC = FALSE) + ylab("")
+  rbm15_plot_list[[motif@name]]  <- p
+  
+  temp_df <- data.frame(filter_name = motif@name, consensus = motif@consensus,
+                        best_match_name = rbm15@name, best_match_consensus = rbm15@consensus)
+  rbm15_align_df <- dplyr::bind_rows(rbm15_align_df, temp_df)
 }
-seqs_train <- c(seq_train_list[[1]],seq_train_list[[2]],seq_train_list[[3]])
-seqs_test <- c(seq_test_list[[1]],seq_test_list[[2]],seq_test_list[[3]])
+
+gridExtra::grid.arrange(grobs = rbm15_plot_list, ncol = 3, left = textGrob("bits", rot=90, gp = gpar(fontface = 8, fontsize = 14)))
 ```
 
+Explanatory of List
 ```{r}
-valid_data_list
-START_SLICE <- 250
-END_SLICE <- 750
-start_slice <- 250
-end_slice <- 750
-```
-
-```{r}
-scan_list = list()
-motif_vector_list = list()
+mot_df <- NULL
 for (fold in 1:NUM_FOLDS){
-  # Resulted in overlap motif
-  # if using enrich_motifs, not entirched!
-  # by default it uses p-value as the threshold. It will use dynamic pvalue which uses default bkg
-  scan <-universalmotif::scan_sequences(motList[[fold]],subseq(seq_test_list[[fold]],start = start_slice,end = end_slice),
-                                        nthreads=4)
-  # to check the enrichment motif with the same params: enrich_motifs(motList[[fold]],subseq(seq_test_list[[fold]],start = start_slice,end = end_slice), nthreads=4, RC = FALSE, no.overlaps=FALSE)
-  # the enrichment motif will use the fisher vector of contingency b/w seqList and background by [[num_hits, num_non_hits],[bkg_num_hits, bkg_num_non_hits]] -> H0 there is no relation between hits and experimental (non-background). Actually we could use it to filter further what kind of motifs which we can look at (as.tibble(enrich_coba) |> dplyr::arrange(desc(target.hits)))
-  scan <- as_tibble(scan)
-  mot_df <- universalmotif::to_df(motList[[fold]])
-  scan <- scan |> inner_join(mot_df |> select(c(name, consensus)), by = dplyr::join_by(motif==name))
-  scan_list[[fold]] <- scan
-  # Create vector list to check the motif occurence
-  motif_vector_list[[fold]] <- list()
-  for (selected_motif in (paste0("filter_",c(1:filter))) ) {
-    seqs_id <- c(1:length(seq_test_list[[fold]]))
-    motif_seqs <- scan |> 
-      dplyr::filter(motif == selected_motif) |> 
-      pull(sequence.i)
-    motif_vector_list[[fold]][[selected_motif]] <- as.integer(seqs_id %in% motif_seqs )
+  for (filter in 1:NUM_FILTERS){
+    temp_df <- tibble(
+      fold = fold,
+      filter = filter,
+      consensus = motList[[fold]][[filter]]@consensus,
+      icscore = motList[[fold]][[filter]]@icscore
+    )
+    mot_df <- dplyr::bind_rows(mot_df, temp_df)
   }
 }
 
+# See the duplicated motifs 
+dup_mots <- mot_df |> 
+  dplyr::group_by(consensus) |> 
+  dplyr::summarise(fold_count = n_distinct(fold), count = n()) |> 
+  dplyr::arrange(desc(fold_count)) |> 
+  dplyr::filter(fold_count>1)
+dup_mots
+```
+
+3 consensus motifs appear to be in more than one fold, such as GAACUUU (fold 4 and 5), GGACUGU (fold 1 and 3), and GUCUUUU (fold 1 and 3), while others are unique within each fold.
+
+
+
+# Scan Motif 
+Now we scan all the extracted motifs withih their respective folds. Here we use universalmoitf scan_sequences which scan for the hits of each motif based on the log-likelihood score. The hits will be outputed if it surprasses the default threshold (0.1)
+```{r}
+scan_list = list()
+for (fold in 1:NUM_FOLDS){
+  # Resulted in overlap motif
+  # by default it uses p-value as the threshold. It will use dynamic pvalue which uses default bkg
+  scan <-universalmotif::scan_sequences(motList[[fold]],subseq(seq_test_list[[fold]],start = START_SLICE,end = END_SLICE),
+                                        nthreads=4)
+  # to check the enrichment motif with the same params: enrich_motifs(motList[[fold]],subseq(seq_test_list[[fold]],start = START_SLICE,end = END_SLICE), nthreads=4, RC = FALSE, no.overlaps=FALSE)
+  # the enrichment motif will use the fisher vector of contingency b/w seqList and background by [[num_hits, num_non_hits],[bkg_num_hits, bkg_num_non_hits]] -> H0 there is no relation between hits and experimental (non-background). Actually we could use it to filter further what kind of motifs which we can look at (as.tibble(enrich_coba) |> dplyr::arrange(desc(target.hits)))
+  scan <- as_tibble(scan)
+  mot_df <- universalmotif::to_df(motList[[fold]])
+  scan <- scan |> inner_join(mot_df |> dplyr::select(c(name, consensus)), by = dplyr::join_by(motif==name))
+  scan_list[[fold]] <- scan
+}
+
 
 ```
 
 
-# ====== NEW =========
+Next, given the scan results, we would like to calculate the occurence of each of the motif within a sequence in each fold and prepare data for the linear regression. where theo dependent variable is delta m6a (pred_case - pred_control) and the independent variables are the occurence of each motif
 ```{r}
-motif_data = list()
-
+motif_data <- list()
+final_data <- NULL
 for (fold in 1:NUM_FOLDS){
-  temp_pred <- readr::read_csv(paste0("validation_",fold,"th_fold_dual_outputs_m6A_info-no_promoter-False_fixed_tune.csv"))
+  temp_pred <- valid_data_list[[fold]]
   temp_pred <- temp_pred |> 
-    mutate(fold = fold, pred_diff = pred_case - pred_control, true_diff = true_case - true_control, sequence.i = row_number()) |>
-    select(fold, sequence.i, pred_diff,true_diff) 
-  temp_pred
+    # HERE we create delta m6a (pred_case - pred_control)
+    dplyr::mutate(fold = fold, pred_diff = pred_case - pred_control, true_diff = true_case - true_control, sequence.i = row_number()) |>
+    dplyr::select(fold, sequence.i, pred_diff,true_diff) 
   
   temp <- as_tibble(scan_list[[fold]])
   temp_join <- temp |> 
-    select(c(motif, sequence.i, consensus,score)) |> 
-    group_by(motif, sequence.i, consensus) |> 
+    dplyr::select(c(motif, sequence.i, consensus,score)) |> 
+    dplyr::group_by(motif, sequence.i, consensus) |> 
     # summarise(sum_score=sum(score), count=n()) |> 
-    summarise(count=n()) |> 
-    mutate(fold = fold) |> 
-    ungroup()
+    dplyr::summarise(count=n()) |> 
+    dplyr::mutate(fold = fold) |> 
+    dplyr::ungroup()
   
-  data <- temp_pred |> dplyr::left_join(temp_join |> select(!c(motif)) |> distinct() , by = c("fold"="fold", "sequence.i"="sequence.i")) |> pivot_wider(names_from = consensus, values_from = count, values_fill = 0)
+  # Distinct for duplicate motif (if any) 
+  data <- temp_pred |> dplyr::left_join(temp_join |> dplyr::select(!c(motif)) |> distinct() , by = c("fold"="fold", "sequence.i"="sequence.i")) |> pivot_wider(names_from = consensus, values_from = count, values_fill = 0)
   
-  motif_data[[fold]] <- data |> select(!c(`NA`))
+  motif_data[[fold]] <- data |> dplyr::select(!c(`NA`))
+  
+  final_data <- dplyr::bind_rows(final_data, motif_data[[fold]])
+}
+
+
+# Append result 
+final_data <- final_data |> mutate_all(funs(replace(., is.na(.), 0)))
+x_data <- as.matrix(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff)))
+
+# NEEDS TO BE PRED_DIFF OMG!!!!!!! (17-05-2024)
+y_data <- final_data$pred_diff
+```
+
+
+
+```{r}
+ggcorrplot::ggcorrplot(cor(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff))), hc.order=TRUE) + 
+  theme(axis.text.x = element_text(angle = 90, size = 8),
+        axis.text.y = element_text(size = 8))
+```
+
+
+HERE WE TRY TO USE GLMNET THAT EXPLOIT THE LASSO AND RIDGE REGRESSSION.
+
+Before that, let's look at the correlation between the control and case (hypoxia) on true and pred value.
+
+```{r}
+ggplot(data = all_valid_data_list |> mutate(fold = paste0("FOLD: ", fold)), mapping = aes(x = true_control, y = true_case)) +
+  geom_point(alpha=0.08, ) +
+  scale_x_continuous(limits=c(0, 1), expand = c(0, 0)) +
+  scale_y_continuous(limits=c(0, 1), expand = c(0, 0)) +
+  stat_cor(method="pearson") +
+  geom_pointdensity(alpha = 0.3, adjust=0.35, size=0.65)  +
+  geom_abline(slope=1, intercept=0, linetype="dashed", linewidth=0.7, color = "gray") +
+  theme_minimal() +
+  scale_color_viridis() +
+  theme_minimal() +
+  facet_wrap(vars(fold)) +
+  labs(title = "Correlation between True Control and Case",
+       x = "True Control",
+       y = "True Case") + 
+  theme(text = element_text(size = 16),  strip.text = element_text(size = 16),
+       plot.title = element_text(size=16, hjust = 0.5),
+       legend.position="none")
+  
+
+
+ggplot(data = all_valid_data_list |> mutate(fold = paste0("FOLD: ", fold)), mapping = aes(x = pred_control, y = pred_case)) +
+  geom_point(alpha=0.08, ) +
+  scale_x_continuous(limits=c(0, 1), expand = c(0, 0)) +
+  scale_y_continuous(limits=c(0, 1), expand = c(0, 0)) +
+  stat_cor(method="pearson") +
+  geom_pointdensity(alpha = 0.3, adjust=0.35, size=0.65)  +
+  geom_abline(slope=1, intercept=0, linetype="dashed", linewidth=0.7, color = "gray") +
+  theme_minimal() +
+  scale_color_viridis() +
+  theme_minimal() +
+  facet_wrap(vars(fold)) +
+  labs(title = "Correlation between Pred Control and Case",
+       x = "Pred Control",
+       y = "Pred Case") + 
+  theme(text = element_text(size = 16),  strip.text = element_text(size = 16),
+       plot.title = element_text(size=16, hjust = 0.5),
+       legend.position="none")
+
+
+```
+Here we just repeat to plot for the report by overlayed the density of difference (please run it not on this notebook to get the resolution right)
+```{r}
+plot_corr_report <- function(cur_fold, valid_df) {
+  valid_df <- valid_df  |> dplyr::filter(fold==cur_fold) |> dplyr::mutate( pred_diff = pred_case - pred_control)
+
+  dist_grob <- ggplotGrob(ggplot(data = valid_df) + 
+                            geom_density(mapping = aes(x=pred_diff), color = "#453781FF", fill = "#453781FF", alpha = 0.5) + 
+                            theme_classic()+ 
+                            labs(x = latex2exp::TeX("$Delta$m6A(Hypoxia-Control)"), y = "Density") +
+                            theme(text = element_text(size = 9),  strip.text = element_text(size = 9), 
+                                  plot.background = element_rect(fill='transparent', color=NA),
+                                  panel.background = element_rect(fill='transparent'),
+                                  panel.grid.major = element_blank(),
+                                  panel.grid.minor = element_blank())
+                          )
+
+  p <- ggplot(data = valid_df |> dplyr::mutate(fold = paste0("FOLD: ", cur_fold)), mapping = aes(x = pred_control, y = pred_case)) +
+    geom_point(alpha=0.08) +
+    scale_x_continuous(limits=c(0, 1), expand = c(0, 0)) +
+    scale_y_continuous(limits=c(0, 1), expand = c(0, 0)) +
+    stat_cor(method="pearson", size=6) +
+    geom_pointdensity(alpha = 0.3, adjust=0.35, size=0.65)  +
+    geom_abline(slope=1, intercept=0, linetype="dashed", linewidth=0.7, color = "gray") +
+    theme_minimal() +
+    scale_color_viridis() +
+    theme_minimal() +
+    labs(
+      #title = paste0("Fold: ", cur_fold),
+         x = "Prediction Control",
+         y = "Prediction Hypoxia") + 
+    theme(text = element_text(size = 16),  strip.text = element_text(size = 16),
+         plot.title = element_text(size=16, hjust = 0.5),
+         legend.position="none") + 
+    annotation_custom(
+      grob = dist_grob,
+      xmin = 0.73,
+      xmax = Inf,
+      ymin = -Inf,
+      ymax = 0.32
+    )
+  
+  return(p)
+}
+
+corr_plot_list <- list()
+for (fold in 1:NUM_FOLDS){
+  corr_plot_list[[fold]] <- plot_corr_report(fold, all_valid_data_list)
+}
+corr_plot_list
+
+grid.arrange(
+  grobs = corr_plot_list,
+  widths = c(1, 1, 1, 1),
+  layout_matrix = rbind(c(1, 1, 2, 2),
+                        c(3, 3, 4, 4),
+                        c(NA, 5, 5, NA))
+)
+
+```
+
+Here, we plot the overall distribution of y_data 
+
+```{r}
+ggplot() + 
+                            geom_density(mapping = aes(x=y_data), color = "#453781FF", fill = "#453781FF", alpha = 0.8) + 
+                            theme_minimal()+ 
+                            labs(x = latex2exp::TeX("$Delta$m6A(Hypoxia-Control)"), y = "Density") +
+                            theme(text = element_text(size = 9),  strip.text = element_text(size = 9), 
+                                  plot.background = element_rect(fill='transparent', color=NA),
+                                  panel.background = element_rect(fill='transparent'),
+                                  panel.grid.major = element_blank(),
+                                  panel.grid.minor = element_blank())
+```
+
+
+
+
+
+USING GLMNET with default 10 folds 
+```{r}
+set.seed(1234)
+n_cores <- parallel::detectCores()
+doMC::registerDoMC(n_cores-1)
+
+#Check registered DoPar 
+foreach::getDoParRegistered() == TRUE 
+# foreach::getDoParWorkers() == 6 # In my MBP M1 
+
+
+
+models <- list()
+model_perf <- NULL
+for (i in 0:20) {
+  name <- paste0("alpha", i/20)
+  
+
+  models[[name]] <-
+    cv.glmnet(x_data, y_data, type.measure="mse", alpha=i/20, 
+              family="gaussian", parallel = TRUE)
+  
+  # best coeef
+  best_coef <- coef(models[[name]], s = "lambda.min")
+  # Get the lambda which gives minimum cvm
+  min_cvm_idx <- which.min(models[[name]]$cvm)
+  # best cvm error  
+  best_cvm <- models[[name]]$cvm[min_cvm_idx]
+  best_r2_cvm <- 1 -  models[[name]]$cvm[min_cvm_idx]/var(y_data)
+  best_classic_r2 <- 1 - sum((y_data - predict(models[[name]], x_data, s = "lambda.min"))^2)/sum((y_data - mean(y_data))^2)
+  coef_num_non_zero <- sum(best_coef != 0)
+  coef_num <- dim(matrix(best_coef))[1]
+  best_adj_r2 <- 1 - (1 - best_classic_r2) * (length(y_data) - 1) / (length(y_data) - coef_num - 1)
+  #best lambda 
+  best_lambda <- models[[name]]$lambda[min_cvm_idx]
+  
+  model_perf <- dplyr::bind_rows(model_perf, tibble(name = name, alpha = i/20, best_lambda = best_lambda, best_cvm = best_cvm, best_r2_cvm = best_r2_cvm, best_classic_r2 = best_classic_r2, 
+                                                    coef_num_non_zero = coef_num_non_zero, coef_num = coef_num, best_adj_r2 = best_adj_r2))
+  
 }
 ```
-
-
+After running the cross-validation to get the best lambda (with smalles mean error) for each of the alpha, we need to get the best alpha
 ```{r}
-# Append result 
-final_data <- dplyr::bind_rows(motif_data[[1]], motif_data[[2]], motif_data[[3]], motif_data[[4]], motif_data[[5]])
-final_data <- final_data |> mutate_all(funs(replace(., is.na(.), 0)))
+model_perf |> 
+  dplyr::arrange((best_cvm))
+# Get the best alpha
+best_alpha <- model_perf |> 
+  dplyr::arrange((best_cvm)) |> 
+  head(1) |> 
+  pull(name)
+```
+
+We can see that he best alpha is 0.55 so that is we mixed both the lasso and the ridge regression.
+Next we need to get the best coefficient for the best alpha
+```{r}
+best_model_coeff <- coef(models[[best_alpha]], s = "lambda.min")
+best_model_coeff_df <- tibble(coeff = rownames(best_model_coeff), Estimate = matrix(best_model_coeff)[,1])
 ```
 
 
-```{r}
-motif_columns <- (colnames(final_data))[5:dim(final_data)[2]]
-fmla <- as.formula(paste("pred_diff ~ ",paste(motif_columns, collapse = " + ")))
-model <- lm(fmla, data = as.data.frame(final_data))
-summ_model <- summary(model)
-
-summ_df <- as.tibble(summ_model$coefficients) |> mutate(motif = rownames(summ_model$coefficients))
-```
-
 
 ```{r}
-ggplot(data = summ_df |> filter(`Pr(>|t|)`<0.05) |> filter(motif != c("(Intercept)", "true_diff")) |> mutate(), mapping = aes(x = Estimate, y = motif, label = motif)) + 
-  geom_point() +
-  geom_text_repel()
-```
-
-
-```{r}
-plot_data <- summ_df |> 
-  filter(`Pr(>|t|)`*(dim(summ_df)[1])<0.05, motif != "(Intercept)", motif !="true_diff") |> 
-  mutate(EffectSign = ifelse(Estimate > 0, "Positive", "Negative"),
+plot_data <- best_model_coeff_df |> 
+  dplyr::filter(coeff != "(Intercept)") |> 
+  dplyr::mutate(EffectSign = ifelse(Estimate > 0, "Positive", "Negative"),
     rank_asc = rank(Estimate),  # Rank in ascending order
     rank_desc = rank(-Estimate), # Rank in descending order (or rank(desc(value)) with dplyr)
     alpha = ifelse(rank_asc <= 3 | rank_desc <= 3, 1, 0.75) # Top/Bottom 3 have alpha 1, others 0.75
   ) |> 
-  select(!c(rank_asc,rank_desc))
-ggplot(data =  plot_data, mapping = aes(x = Estimate, y = reorder(motif, -Estimate), label = motif, fill = EffectSign)) + 
+  dplyr::select(!c(rank_asc,rank_desc))
+ggplot(data =  plot_data, mapping = aes(x = Estimate, y = reorder(coeff, -Estimate), label = coeff, fill = EffectSign)) + 
   geom_col(mapping = aes(alpha = alpha)) +
   labs(x = "Effect Size", y = "Motif", title = "Effect of Motifs") +
   theme_minimal() +
@@ -363,7 +971,7 @@ ggplot(data =  plot_data, mapping = aes(x = Estimate, y = reorder(motif, -Estima
 ```{r}
 pos_motif <- plot_data |> 
   filter(alpha == 1, EffectSign=="Positive") |> 
-  pull(motif)
+  pull(coeff)
 for (mot in pos_motif){
   for (filter in unlist(motList)) {
     if (filter@consensus == mot) {
@@ -378,7 +986,7 @@ for (mot in pos_motif){
 
 neg_motif <- plot_data |> 
   filter(alpha == 1, EffectSign=="Negative") |> 
-  pull(motif)
+  pull(coeff)
 for (mot in neg_motif){
   for (filter in unlist(motList)) {
     if (filter@consensus == mot) {
@@ -393,592 +1001,192 @@ for (mot in neg_motif){
 
 
 
-
+After we know the estimated effect size of the motifs for the dynamic of m6A level, we want to know the total occurence of each motifs (averaged if it is duplicated across fold)
 ```{r}
-library(lmtest)
-library(ggcorrplot)
-ggcorrplot::ggcorrplot(cor(final_data |> select(!c(fold, sequence.i, pred_diff, true_diff)))) + theme(axis.text.x = element_text(angle = 90))
-lmtest::bptest(model)
-```
-
-
-HERE WE TRY TO USE GLMNET THAT EXPLOIT THE LASSO AND RIDGE REGRESSSION.
-
-Before that, let's look at the correlation between the control and case (hypoxia) on true and pred value.
-
-```{r}
-all_valid_data_list <- NULL
-
-for (fold in c(1:NUM_FOLDS)){
-  all_valid_data_list <- dplyr::bind_rows(all_valid_data_list, valid_data_list[[fold]] |> 
-                                            mutate(fold = paste0("fold: ", as.character(fold))))
-
-}
-ggplot(data = all_valid_data_list, mapping = aes(x = true_control, y = true_case)) +
-  geom_point(alpha=0.08) +
-  stat_cor(method="pearson") +
-  theme_minimal() +
-  facet_wrap(vars(fold)) +
-   labs(title = "Correlation between True Control and Case",
-       x = "True Control",
-       y = "True Case")
-
-
-ggplot(data = all_valid_data_list, mapping = aes(x = pred_control, y = pred_case)) +
-  geom_point(alpha=0.08) +
-  stat_cor(method="pearson") +
-  theme_minimal() +
-  facet_wrap(vars(fold)) +
-   labs(title = "Correlation between Pred Control and Case",
-       x = "Pred Control",
-       y = "Pred Case")
-
-```
-USING GLMNET with default 10 folds 
-```{r}
-net_cv_fit_05_alpha <- glmnet::cv.glmnet(x = as.matrix(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff))), y = final_data$true_diff, alpha = 0.5, family = "gaussian", parallel=TRUE)
-
-net_cv_fit_1_alpha <- glmnet::cv.glmnet(x = as.matrix(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff))), y = final_data$true_diff, alpha = 1, family = "gaussian", parallel=TRUE)
-
-
-net_cv_fit_0_alpha <- glmnet::cv.glmnet(x = as.matrix(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff))), y = final_data$true_diff, alpha = 0, family = "gaussian", parallel=TRUE)
-```
-
-```{r}
-par(mfrow = c(2,2))
-plot(net_cv_fit_1_alpha); plot(net_cv_fit_05_alpha ); plot(net_cv_fit_0_alpha)
-plot(log(net_cv_fit_1_alpha$lambda)   , net_cv_fit_1_alpha$cvm , pch = 19, col = "red",
-     xlab = "log(Lambda)", ylab = net_cv_fit_1_alpha$name)
-points(log(net_cv_fit_05_alpha $lambda), net_cv_fit_05_alpha $cvm, pch = 19, col = "grey")
-points(log(net_cv_fit_0_alpha$lambda) , net_cv_fit_0_alpha$cvm , pch = 19, col = "blue")
-legend("topleft", legend = c("alpha= 1", "alpha= .5", "alpha 0"),
-       pch = 19, col = c("red","grey","blue"))
-```
-```{r}
-library(plotmo) # for plotres
-plotres(net_cv_fit_05_alpha)
-```
-
-
-
-
-
-NOW FOR THE TRUE 
-
-```{r}
-fmla2 <- as.formula(paste("true_diff ~ ",paste(motif_columns, collapse = " + ")))
-model2 <- glm(fmla2, data = as.data.frame(final_data))
-summ_df2 <- as.tibble(summary(model2)$coefficients) |> mutate(motif = rownames(summary(model2)$coefficients))
-
-ggplot(data = summ_df2 |> filter(`Pr(>|t|)`<0.05) |> filter(motif != "(Intercept)") |> mutate(), mapping = aes(x = Estimate, y = motif, label = motif)) + 
-  geom_point() +
-  geom_text_repel()
-```
-
-
-
-
-
-# ====== OLD =========
-
-
-```{r}
-model_summ_list <- list()
-model_summ_df <- dplyr::tibble(
-  fold = integer(),
-  filter = integer(),
-  consensus = character(),
-  est_ctrl = numeric(),
-  est_OR_ctrl = numeric(),
-  est_low_OR_ctrl = numeric(),
-  est_high_OR_ctrl = numeric(),
-  est_ctrl_pval = numeric(),
-  est_case = numeric(),
-  est_OR_case = numeric(),
-  est_low_OR_case = numeric(),
-  est_high_OR_case = numeric(),
-  est_case_pval = numeric()
-)
-
-for (fold in 1:NUM_FOLDS){
-  model_summ_list[[fold]] <- list()
-  for (filter in 1:NUM_FILTERS){
-    # Get the prediction data for each fold
-    temp_df <- valid_data_list[[fold]] |> dplyr::select(c(pred_control, pred_case))
+temp_pos <- tibble(start=START_SLICE:END_SLICE)
+mot_count_post <- list()
+temp_mot_count_df <- NULL
+for(i in 1:NUM_FOLDS){
+  for(j in 1:NUM_FILTERS){
+    motif_name <- paste0("fold_",i,"_filter_",j)
+    motif_consensus <- motList[[i]][[j]]@consensus
     
-
-    # the log odds of the dependent variable being 1 (rather than 0) for a one-unit change in the independent variable
-    # An increase in an est_coff (set others constant) is associated with an increase in the log odds of y=1, and thus an increase in the odds of y=1
-    # log used here is in natural log -> convert into OR with exp()
-    model <- glm(motif_vector_list[[fold]][[paste0("filter_",filter)]] ~ temp_df$pred_control + temp_df$pred_case, family="binomial")
-    model_conf_int <- exp(confint(model))
-    summ_model <- summary(model)
-    coeff <- summ_model$coefficients
-    model_summ_list[[fold]][[filter]] <- summ_model
-    model_summ_df <- model_summ_df |> 
-      dplyr::add_row(fold = fold, filter = filter,
-                     consensus=as.data.frame(motList[[fold]][[filter]])$consensus, 
-                     est_ctrl = coeff[2,'Estimate'],
-                     est_OR_ctrl = exp(coeff[2,'Estimate']),
-                     est_low_OR_ctrl = model_conf_int[2,1],
-                     est_high_OR_ctrl = model_conf_int[2,2],
-                     est_ctrl_pval = coeff[2,'Pr(>|z|)'], 
-                     est_case = coeff[3,'Estimate'], 
-                     est_OR_case = exp(coeff[3,'Estimate']), 
-                     est_low_OR_case =  model_conf_int[3,1],
-                     est_high_OR_case = model_conf_int[3,2],
-                     est_case_pval = coeff[3,'Pr(>|z|)'])
+    temp_mot_count <- scan_list[[i]] |> 
+      dplyr::filter(motif == motif_name) |> 
+      dplyr::group_by(start) |> 
+      count() |> 
+      ungroup()
+    temp_mot_count$start <- temp_mot_count$start + START_SLICE
+    temp_mot_count <- temp_pos |> dplyr::left_join(temp_mot_count, by = c("start"="start")) |> 
+      mutate(motif_name = motif_name, motif_consensus = motif_consensus)
+    temp_mot_count[is.na(temp_mot_count$n), "n"] <- 0
+    temp_mot_count <- temp_mot_count |> dplyr::select(motif_name, motif_consensus, start, n)
+    # Make df contains the motif_name, consesnsus, and the occurence across all positions
+    temp_mot_count_df <- dplyr::bind_rows(temp_mot_count_df, tibble(motif = motif_name, consensus = motif_consensus, count = sum(temp_mot_count$n)))
+    mot_count_post[[motif_name]] <- temp_mot_count
   }
 }
-
-head(model_summ_df)
 ```
 
 
 
 ```{r}
-model_summ_df |> mutate(signf_ctrl = ifelse(est_ctrl_pval < 0.05, "SIGNF", "UNSIGNF"),
-                        signf_case = ifelse(est_case_pval < 0.05, "SIGNF", "UNSIGNF"))
-```
-
-
-
-```{r}
-
-
-ggplot(data = model_summ_df |> mutate(signf_ctrl = ifelse(est_ctrl_pval < 0.05, "SIGNF", "UNSIGNF"),
-                        signf_case = ifelse(est_case_pval < 0.05, "SIGNF", "UNSIGNF")), 
-       mapping = aes(x = est_ctrl, y = est_case, label = consensus)) + 
-  geom_point(mapping = aes(shape = factor(signf_ctrl), color = factor(signf_case)),
-             size = 2.5, alpha = 0.75)+
-  geom_hline(yintercept = 0) +
-  geom_vline(xintercept = 0) +
-  geom_text_repel() + 
-  labs(title = "Logit Model Of Motifs Occurence",
-       x = "est. LOR_(m6A case) effect",
-       y = "est. LOR_(m6A ctrl) effect",
-       color = "Significance") +
-  xlim(-15, 15) + 
-  ylim(-10, 10) +
-  #theme with white background
-  theme_bw() +
-  theme(
-    plot.background = element_blank(),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.border = element_blank()
-  ) 
-
-
-```
-
-
-
-```{r}
-hist(scan_list[[fold]]$start + 250 -1)
-hist(scan_list[[fold]]$stop + 250 -1)
-```
-
-
-HERE IT IS BASED ON THE OCCURENCE 
-
-```{r}
-
-n_cores <- parallel::detectCores()
-doMC::registerDoMC(n_cores-1)
-
-#Check registered DoPar 
-foreach::getDoParRegistered() == TRUE 
-# foreach::getDoParWorkers() == 6 # In my MBP M1 
-
-fold = NUM_FOLDS
-
-start <- proc.time()[[3]]
-# Parallel loop to compute increments
-scan_list <- foreach(seq_id = 1:length(seq_test_list[[fold]]), 
-                     .packages = c("foreach", "tidyverse")) %dopar% {
-  # Create a local matrix to store the increment for this iteration
-  local_increment <- matrix(0, nrow = filter, ncol = width(seq_test_list[[fold]][1]) )
-  rownames(local_increment) <- paste0("filter_",c(1:filter))
-  
-  for (filter_idx in c(1:filter)){
-    filter_at <- paste0("filter_",filter_idx)
-    temp <- results |> filter(motif==filter_at, sequence.i==seq_id)
-    if (nrow(temp) != 0){
-      for(row_temp in c(1:dim(temp)[1])){
-        # Calculate start and stop positions
-        start_pos <- temp$start[row_temp] + (start_slice - 1)
-        stop_pos <- temp$stop[row_temp] + (start_slice - 1)
-        
-        print(start_pos)
-        print(stop_pos)
-
-        # Increment the local matrix for the given motif occurrence
-        local_increment[filter_at, start_pos:stop_pos] <- local_increment[filter_at, start_pos:stop_pos] + 1
-        
-      }
-    }
-  }
-  local_increment
-}
-
-# Sum up all increments
-# freq_result <- rowsum(increments_list, row.names(increments_list))
-elapsed <- proc.time()[[3]] - start
-
-print(paste0("Elapsed time: ", elapsed))
-
-
-scan_list_reduce <- Reduce(`+`, scan_list) # 16,1001 
-```
-
-
-
-I think we need to change it such that our data is consist of starting index of motif, nad the y axis is the score find from the scan_motif. Therefore we can find any scoring which is not overlap for the downstream graph!
-
-```{r}
-results |> group_by(sequence.i) |> count() |> arrange(desc(n)) |> head()
-```
-
-
-
-
-
-
-
-```{r}
-# OVERALL PATTERN 
-temp_df <- data.frame(x=c(1:1001), y=colSums(scan_list_reduce))
-ggplot(temp_df, mapping=aes(x=x, y=y, color="black", fill="gray")) + 
-  geom_bar(stat="identity", position="identity", show.legend = FALSE) + 
-  xlim(250,750) +
-  labs(title = "Overall Pattern Cumulative Sum of Detected Motif",
-       x = "Position",
-       y = "Cumulative Sum") + 
-  theme_minimal()
-
-```
-
-```{r}
-
-filter = 7
-temp_df <- data.frame(x=c(-500:500), y=scan_list_reduce[filter,]) #5, 10, 11
-temp_mean_df <- data.frame(x=c(-500:500), y=colMeans(scan_list_reduce))
-bar <-ggplot() + 
-  geom_line(temp_mean_df, mapping=aes(x=x, y=y), color="grey", show.legend = FALSE) + 
-  geom_line(temp_df, mapping=aes(x=x, y=y), color="red", show.legend = FALSE) + 
-  xlim(-260,240) +
-  labs(
-       x = "Starting Position of Motif Relative to m6A Site",
-       y = "Cumulative Window Hits") + 
-  theme_minimal() + 
-  #eliminates background, gridlines, and chart border
-  theme(
-    plot.background = element_blank(),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-  ) 
-
-
-temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
-p <- ggseqlogo::ggseqlogo(temp_mat) 
-
-blank <- grid::nullGrob()
-
-# Layout
-layout_matrix <- matrix(c(1, 4, 3, 4,2,4), nrow = 3, byrow = TRUE)
-gridExtra::grid.arrange(blank, blank, p, bar,  layout_matrix = layout_matrix, 
-             widths = c(1, 3), heights = c(2.3, 2, 2.3), top=paste("Fold", fold, "Filter", filter))
-```
-
-
-```{r}
-library(patchwork)
-filter = 5
-temp_df <- data.frame(x=c(1:1001), y=scan_list_reduce[filter,]) #5, 10, 11
-temp_mean_df <- data.frame(x=c(1:1001), y=colMeans(scan_list_reduce))
-bar <-ggplot() + 
-  geom_line(temp_mean_df, mapping=aes(x=x, y=y), color="grey", show.legend = FALSE) + 
-  geom_line(temp_df, mapping=aes(x=x, y=y), color="red", show.legend = FALSE) + 
-  xlim(260,740) +
-  labs(title=paste("Fold", fold, "Filter", filter),
-       x = "Starting Position of Motif",
-       y = "Cumulative Window Hits") + 
-  theme_minimal() + 
-  #eliminates background, gridlines, and chart border
-  theme(
-    plot.background = element_blank(),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-  ) 
-
-temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
-p <- ggseqlogo::ggseqlogo(temp_mat) 
-
-bar + inset_element(p, 0.7, 0, 1, 0.3)
-```
-
-
-```{r}
-
-for (fold in 1:NUM_FOLDS) {
-  plots <- list() # Temporary list to store plots for each fold
-  for (filter in 1:NUM_FILTERS) {
-    temp_mat <- convert_type(motList[[fold]][[filter]], 'ICM')@motif
-    p <- ggseqlogo(temp_mat) + 
-      labs(title = paste("Fold", fold, "Filter", filter))
-    plots[[filter]] <- p
-  }
-  # Combine all plots for the current fold
-  combined_plot <- do.call(gridExtra::grid.arrange, c(plots, ncol = 4))
-  plot_list[[fold]] <- combined_plot
-}
-```
-
-
-
-```{r}
-
-plot_list <- list()
-for (fold in 5:5) {  # Adjust the range as needed
-  plots <- list() # Temporary list to store plots for each fold
-  plots_vec <- c()
-  for (filter in 1:NUM_FILTERS) {
-    temp_df <- data.frame(x = 1:1001, y = scan_list_reduce[filter,])
-    temp_mean_df <- data.frame(x = 1:1001, y = colMeans(scan_list_reduce))
-
-    bar <- ggplot() + 
-      geom_line(data = temp_mean_df, aes(x = x, y = y), color = "grey", show.legend = FALSE) +
-      geom_line(data = temp_df, aes(x = x, y = y), color = "red", show.legend = FALSE) +
-      xlim(260, 740) +
-      labs(x = "Position", y = "Cumulative Window Sum") + 
-      theme_minimal() +
-      theme(plot.background = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-
-    temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
-    p <- ggseqlogo::ggseqlogo(temp_mat)
-    combined_plot <- bar + patchwork::inset_element(p, left = 0.7, bottom = 0, right = 1, top = 0.3)
-
-
-
-    blank <- grid::nullGrob()
-    
-    # Layout
-    layout_matrix <- matrix(c(1, 4, 3, 4,2,4), nrow = 3, byrow = TRUE)
-    combined_plot <- gridExtra::grid.arrange(blank, blank, p, bar,  layout_matrix = layout_matrix, 
-                 widths = c(1, 3), heights = c(2.3, 2, 2.3), top=paste("Fold", fold, "Filter", filter))
-    
-    # Combine plots directly into a patchwork object
-    plots[[filter]] <- combined_plot
-    plots_vec <- append(plots_vec, combined_plot)
-    print(combined_plot)
-  }
-  # Use a compatible method to combine all plots in `plots`
-  plot_grid <-  ggpubr::ggarrange(plots_vec, common.legend = TRUE)
-  plot_list[[fold]] <- plot_grid
-}
-```
-
-
-
-```{r}
-plot_list <- list()
-for (fold in 5:5) {
-  plot_grid <- list()  # Initialize to store combined ggplot objects
-  for (filter in 1:NUM_FILTERS) {
-    # Generate each plot
-    temp_df <- data.frame(x = 1:1001, y = scan_list_reduce[filter,])
-    temp_mean_df <- data.frame(x = 1:1001, y = colMeans(scan_list_reduce))
-
-    bar <- ggplot() + 
-      geom_line(data = temp_mean_df, aes(x = x, y = y), color = "grey") +
-      geom_line(data = temp_df, aes(x = x, y = y), color = "red") +
-      xlim(260, 740) +
-      labs(x = "Position", y = "Cumulative Window Sum") +
-      theme_minimal() +
-      theme(
-        plot.background = element_blank(),
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        plot.margin = margin(5, 5, 5, 5, "pt")  # Adjust margins as needed
-      )
-
-    temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
-    p <- ggseqlogo::ggseqlogo(temp_mat)
-    combined_plot <- bar + inset_element(p, left = 0.7, bottom = 0, right = 1, top = 0.3)
-
-    # Add to the cumulative plot object
-    if (is.null(plot_grid)) {
-      plot_grid <- combined_plot
-    } else {
-      plot_grid <- plot_grid + combined_plot
-    }
-  }
-  
-  # Define the layout and include spacers if needed
-  plot_grid <- plot_grid + 
-    plot_layout(ncol = 4, nrow = 4, widths=8, heights=4)  # Ensuring layout fits all plots
-  plot_list[[fold]] <- plot_grid
-}
-```
-
-
-
-
-```{r}
-n_cores <- parallel::detectCores()
-doMC::registerDoMC(n_cores-1)
-
-#Check registered DoPar 
-foreach::getDoParRegistered() == TRUE 
-# foreach::getDoParWorkers() == 6 # In my MBP M1 
-
-fold = 5
-
-start <- proc.time()[[3]]
-# Parallel loop to compute increments
-scan_list_freq <- foreach(seq_id = 1:length(seq_test_list[[fold]]), 
-                     .packages = c("foreach", "tidyverse")) %dopar% {
-  # Create a local matrix to store the increment for this iteration
-  local_increment_score <- matrix(0, nrow = filter, ncol = width(seq_test_list[[fold]][1]) )
-  rownames(local_increment_score) <- paste0("filter_",c(1:filter))
-  
-  for (filter_idx in c(1:filter)){
-    filter_at <- paste0("filter_",filter_idx)
-    temp <- as_tibble(scan_list[[fold]]) |> filter(motif==filter_at, sequence.i==seq_id)
-    if (nrow(temp) != 0){
-      for(row_temp in c(1:dim(temp)[1])){
-        # Calculate start positions
-        start_pos <- temp$start[row_temp] + (start_slice - 1)
-        
-        print(start_pos)
-        # Increment the local matrix for the given motif score
-        local_increment_score[filter_at, start_pos:start_pos] <- local_increment_score[filter_at, start_pos:start_pos] + 1 
-        
-      }
-    }
-  }
-  local_increment_score
-}
-
-# Sum up all increments
-# freq_result <- rowsum(increments_list, row.names(increments_list))
-elapsed <- proc.time()[[3]] - start
-
-print(paste0("Elapsed time: ", elapsed))
-
-
-scan_list_freq_reduce <- Reduce(`+`, scan_list_freq) # 16,1001 
-```
-
-# DRACH: D(A/G/T)R(A/G)CH(A/C/T)
-```{r}
-plot_motif_dist <- function(scan_list_score_reduce, motList, fold, filter, xlim=10) {
-  temp_df <- data.frame(x=c(-500:500), y=scan_list_score_reduce[filter,]) # Fold5: 5(not enrich), 10, 11
-  # TOMTOM FOR FOLD 5 https://meme-suite.org/meme//opal-jobs/appTOMTOM_SHORT_5.5.51713708295061807977788/tomtom.html
-  
-  temp_mean_df <- data.frame(x=c(-500:500), y=colMeans(scan_list_score_reduce))
-  bar <-ggplot() + 
-    geom_line(temp_mean_df, mapping=aes(x=x, y=y), color="grey", show.legend = FALSE) + 
-    geom_line(temp_df, mapping=aes(x=x, y=y), color="red", show.legend = FALSE) + 
-    xlim(-xlim,xlim) +
+fold <- 2 
+filter <- 23
+tem_plot_df <- mot_count_post[[paste0("fold_",fold,"_filter_",filter)]]
+# tem_plot_df$n<-tem_plot_df$n/sum(tem_plot_df$n)
+p <- ggplot() +
+  geom_freqpoly(data = tem_plot_df,binwidth=7, mapping = aes(x = start - 500, weight = n), color="red",show.legend = FALSE) +
     labs(
          x = "Starting Position of Motif Relative to m6A Site",
-         y = "Motif Frequency") + 
+         y = "Frequency") + 
     theme_minimal() + 
     #eliminates background, gridlines, and chart border
     theme(
       plot.background = element_blank(),
       panel.grid.major = element_blank(),
-      panel.grid.minor = element_blank(),
+      panel.grid.minor = element_blank()
     ) +
+    # xlim(-249, 249) +
     geom_vline(xintercept = 0, linetype="dotted")
-  
-  temp_mat <- universalmotif::convert_type(motList[[fold]][[filter]], 'ICM')@motif
-  p <- ggseqlogo::ggseqlogo(temp_mat) 
-  
-  blank <- grid::nullGrob()
-  
-  # Layout
-  layout_matrix <- matrix(c(1, 4, 3, 4,2,4), nrow = 3, byrow = TRUE)
-  gridExtra::grid.arrange(blank, blank, p, bar,  layout_matrix = layout_matrix, 
-               widths = c(1, 3), heights = c(2.3, 2, 2.3), top=paste("Fold", fold, "Filter", filter))
-    
+logo <- ggseqlogo::ggseqlogo(universalmotif::convert_type(motList[[fold]][[filter]], "ICM")@motif) + scale_y_continuous(breaks=c(0,1,2)) + labs(y="bits") +
+         theme( panel.background=element_blank(), 
+               axis.text.x=element_blank(),           
+               axis.title.x=element_blank(), )
+empty <- ggplot()+geom_point(aes(1,1), colour="white")+
+         theme(axis.ticks=element_blank(), 
+               panel.background=element_blank(), 
+               axis.text.x=element_blank(), axis.text.y=element_blank(),           
+               axis.title.x=element_blank(), axis.title.y=element_blank())
+grid.arrange(logo,empty, p, nrow=2, widths=c(2,3), heights=c(1, 6), layout_matrix = rbind(c(1, 2),
+                        c(3, 3)))
+
+```
+
+
+```{r}
+temp_motList <- unlist(motList)
+mot_df <- NULL
+for (i in 1:length(temp_motList)){
+  temp_df <- as.data.frame(temp_motList[[i]])
+  mot_df <- dplyr::bind_rows(mot_df, temp_df)
 }
+
+mot_df <- best_model_coeff_df |> 
+  dplyr::left_join(mot_df |> dplyr::select(consensus) |> dplyr::distinct(), 
+                   by = c("coeff"="consensus")) |> 
+  dplyr::left_join(rbm15_align_df |> dplyr::select(c(consensus, best_match_name)) |> dplyr::distinct(), 
+                   by = c("coeff"="consensus")) |>
+  dplyr::left_join(match_motif_df |> dplyr::select(c(consensus, best_match_name, filter_name)) |> dplyr::distinct(),
+                   by = c("coeff"="consensus")) |> 
+  dplyr::rename(rbm15_align = best_match_name.x,
+                tomtom_best_match = best_match_name.y) |> 
+  dplyr::left_join(temp_mot_count_df, by = c("coeff"="consensus"))
+
+plot_mot_df <- mot_df |> 
+  dplyr::filter(coeff != "(Intercept)") |> 
+  dplyr::mutate(color_flag = case_when(
+    !is.na(rbm15_align) ~ "RBM15_align", 
+    !is.na(tomtom_best_match) ~ "TOTOM_match",
+    .default = "unannotated"),
+    shape_flag = case_when(
+    !is.na(rbm15_align) ~"17",
+    !is.na(tomtom_best_match) ~ "17",
+    .default = "16"),
+    text_label = case_when(
+      (!is.na(rbm15_align) | !is.na(tomtom_best_match) | count>10000 | (Estimate > 0.01 | Estimate < -0.01)) ~ coeff,
+      .default = NULL
+    )) |> 
+  dplyr::select(!c(filter_name, motif)) |> 
+  dplyr::group_by(coeff, Estimate, rbm15_align, tomtom_best_match, color_flag, shape_flag, text_label) |> 
+  dplyr::summarise(count = sum(count)) #sum (previously mean) since GUCUUUU, GAACUUU, and GGACUGU are appear in more than once
+
+p <- ggplot(data = plot_mot_df,  mapping = aes(x = count, y = Estimate, color=color_flag)) + 
+  geom_point(mapping = aes(alpha=abs(Estimate*10), shape=shape_flag, size=2.7)) + theme_minimal() + theme(legend.position=c(0.9, 0.9), legend.text = element_text(size=12), axis.title=element_text(size=14), axis.text = element_text(size=12)) + geom_hline(yintercept = 0, color = "grey", linetype = "dashed") + geom_text_repel(mapping = aes(label = text_label), size=4) + labs(x = "Motif Occurence", y = latex2exp::TeX("Estimated Effect Size on Predicted $\\Delta$m6A (Predicted Hypoxia m6A level - Predicted Normal m6A level")) +  scale_colour_manual(name="Annotation", values = c("RBM15_align" = "#F8766D","TOTOM_match" = "#00BFC4", "unannotated" = "black")) + guides(shape = "none", size = "none", alpha= "none", color = guide_legend( 
+    override.aes=aes(label = "")))
+p_hist_estimate <- ggplot(data = plot_mot_df, mapping = aes(x = count)) + geom_histogram() + theme_minimal() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.border = element_blank(),
+        axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank())
+p_hist_icscore <- ggplot(data = plot_mot_df, mapping = aes(y = Estimate)) + geom_histogram() + theme_minimal() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.border = element_blank(),
+        axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank())
+empty <- ggplot()+geom_point(aes(1,1), colour="white")+
+         theme(axis.ticks=element_blank(), 
+               panel.background=element_blank(), 
+               axis.text.x=element_blank(), axis.text.y=element_blank(),           
+               axis.title.x=element_blank(), axis.title.y=element_blank())
+grid.arrange(p_hist_estimate, empty, p, p_hist_icscore, ncol=2, nrow=2, widths=c(6, 1), heights=c(1, 6))
+
 ```
 
 
+
 ```{r}
-for( fold in c(4:4)){
-  for (filter in c(1:NUM_FILTERS)){
-    plot_motif_dist(scan_list_freq_reduce, motList, fold=fold, filter=filter, 100)
-    
-  }
+top_motif_dist_df <- NULL
+for(i in 1:NUM_FOLDS){
+  temp <- scan_list[[i]] |> 
+    dplyr::filter(consensus %in% c(neg_motif, pos_motif)) |> 
+    dplyr::rowwise() |> 
+    dplyr::mutate(
+      m6A_pos = data_split_TEST[[i]][[sequence.i, "start"]],
+      gene = data_split_TEST[[i]][[sequence.i, "gene"]],
+      gene_type = data_split_TEST[[i]][[sequence.i, "gene_type"]],
+      tx_id = data_split_TEST[[i]][[sequence.i, "tx_id"]],
+      mot_start = start,
+      rel_start = start + m6A_pos - 500,
+      rel_end = stop + m6A_pos - 500,
+      chr = data_split_TEST[[i]][[sequence.i, "seqnames"]],
+      pred_control = valid_data_list[[i]][[sequence.i, "pred_control"]],
+      pred_case = valid_data_list[[i]][[sequence.i, "pred_case"]],
+      regulation_flag = case_when(pred_case - pred_control  < -0.1 ~ "down",
+                                  pred_case - pred_control > 0.1 ~ "up",
+                                  .default = "no_change")
+    ) |> 
+    dplyr::ungroup() |> 
+    dplyr::select(motif, consensus, gene,  gene_type, tx_id, chr,  m6A_pos, mot_start, rel_start, rel_end, pred_control, pred_case, regulation_flag)
+  top_motif_dist_df <- dplyr::bind_rows(top_motif_dist_df, temp)
 }
+
+
+# top_motif_dist_df |> dplyr::filter(gene_type == "protein_coding", chr != "chrX", chr != "chrY") |> dplyr::group_by(gene) |> dplyr::summarise(n=n()) |> dplyr::ungroup() |> dplyr::arrange(desc(n))
+```
+
+
+```{r}
+ggplot(data=top_motif_dist_df |> dplyr::filter(consensus %in% c("UAGCCCC", "WGGUAGG", "AGGUAAG", "HSCGAAU", "GUCSACS", "WSGAAGA")) ) + geom_density(mapping = aes(x=mot_start, color=regulation_flag)) + facet_wrap(vars(consensus))
 ```
 
 
 
-```{r}
-for( fold in c(3:3)){
-  for (filter in c(1:NUM_FILTERS)){
-    plot_motif_dist(scan_list_freq_reduce, motList, fold=fold, filter=filter, 100)
-    
-  }
-}
-```
 
-
-# Differnece model 
 
 ```{r}
+temp_select_gene <- top_motif_dist_df |> dplyr::filter(gene_type == "protein_coding", chr != "chrX", chr != "chrY") |> dplyr::filter(gene=="VEGFA")
+mrna_plot_data |> dplyr::left_join(top_motif_dist_df |> dplyr::filter(gene_type == "protein_coding", chr != "chrX", chr != "chrY")  |> dplyr::select(mot_start, rel_start, rel_end, consensus, m6A_pos), by = join_by(start==m6A_pos))
 
 
+coba <- mrna_plot_data |> dplyr::left_join(top_motif_dist_df |> dplyr::filter(gene_type == "protein_coding", chr != "chrX", chr != "chrY")  |> dplyr::select(mot_start, rel_start, rel_end, consensus, m6A_pos), by = join_by(start==m6A_pos))
 
-diff_model_summ_list <- list()
-diff_model_summ_df <- dplyr::tibble(
-  fold = integer(),
-  filter = integer(),
-  consensus = character(),
-  est_effec = numeric(),
-  est_OR_effect = numeric(),
-  est_low_OR_effect = numeric(),
-  est_high_OR_effect = numeric(),
-  est_pval = numeric()
-)
-
-for (fold in 1:NUM_FOLDS){
-  diff_model_summ_list[[fold]] <- list()
-  for (filter in 1:NUM_FILTERS){
-    # Get the prediction data for each fold
-    temp_df <- valid_data_list[[fold]] |> dplyr::select(c(pred_control, pred_case))
-    
-    temp_df$diff <- temp_df$pred_control - temp_df$pred_case
-    # the log odds of the dependent variable being 1 (rather than 0) for a one-unit change in the independent variable
-    # An increase in an est_coff (set others constant) is associated with an increase in the log odds of y=1, and thus an increase in the odds of y=1
-    # log used here is in natural log -> convert into OR with exp()
-    model <- glm(motif_vector_list[[fold]][[paste0("filter_",filter)]] ~ temp_df$diff, family="binomial")
-    model_conf_int <- exp(confint(model))
-    summ_model <- summary(model)
-    coeff <- summ_model$coefficients
-    diff_model_summ_list[[fold]][[filter]] <- summ_model
-    diff_model_summ_df <- diff_model_summ_df |> 
-      dplyr::add_row(fold = fold, filter = filter,
-                     consensus=as.data.frame(motList[[fold]][[filter]])$consensus, 
-                     est_effec = coeff[2,'Estimate'],
-                     est_OR_effect = exp(coeff[2,'Estimate']),
-                     est_low_OR_effect = model_conf_int[2,1],
-                     est_high_OR_effect = model_conf_int[2,2],
-                     est_pval = coeff[2,'Pr(>|z|)'])
-  }
-}
-```
-```{r}
-
+coba |> dplyr::filter(gene=="PHF13")
 ```
 
 ```{r}
-ggplot(data = diff_model_summ_df |> filter(est_pval/ < 0.05)) + 
-  geom_point(mapping = aes(x = est_effec, y = consensus, label = consensus)) 
+coba2 <- coba |> 
+    dplyr::mutate(mot_pos_flag = ifelse(strand_gene == "+", 
+                                    case_when(rel_start < cds_start ~ "5UTR",
+                                              rel_start >= cds_start & rel_start < utr3_start ~ "CDS",
+                                              rel_start >= utr3_start ~ "3UTR"),
+                                    case_when(rel_start > cds_start ~ "5UTR", 
+                                              rel_start <= cds_start & rel_start > utr3_start ~ "CDS",
+                                              rel_start <= utr3_start ~ "3UTR"))) |> 
+  dplyr::distinct()
+```
+
+
+```{r}
+ggplot(data = coba2 |> dplyr::filter(!is.na(rel_start)) |> dplyr::select(consensus, mot_pos_flag, mot_start, rel_start) |> dplyr::distinct()) +
+  geom_density(mapping = aes(x = mot_start, color = consensusj))
 ```
 

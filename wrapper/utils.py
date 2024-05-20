@@ -40,7 +40,15 @@ def one_hot(seq: str) -> np.ndarray:
     return result.T
 
 
-def get_record_by_index(path_to_fasta, target_index):
+def get_record_by_index(path_to_fasta:str, target_index:int) -> str:
+    """
+    Reterive a sequence from a fasta file by index
+
+    param: path_to_fasta: str: path to fasta file 
+    param: target_index: int: index to be queried 
+
+    return: str: sequence from fasta file
+    """
     seq_records = list(SeqIO.parse(path_to_fasta, format="fasta"))
     if target_index < len(seq_records):
         return str(seq_records[target_index].seq)
@@ -146,7 +154,7 @@ def plot_loss_function(result_path: str, output_path: str, output_name: str) -> 
 
 def plot_correlation(y_true: np.ndarray, y_pred: np.ndarray, output_path: str = "", output_name: str = "", title="", interactive=False) -> None:
     """
-    Plot correlation
+    Plot correlation with marginal plot and the density of the points
 
     param: x: np.ndarray: x-axis
     param: y: np.ndarray: y-axis
@@ -213,6 +221,13 @@ def initialize_kaiming_weights(model: torch.nn.Module):
 
 
 class EarlyStopper:
+    """
+    Class for early stopping in training process.
+    It will stop the training process if the validation loss is not improving for a certain number of epochs.
+
+    param: patience: int: number of epochs to wait before stopping the training
+    param: min_delta: int: threshold for stopping to be triggered 
+    """
     def __init__(self, patience: int = 5, min_delta: float = 0.05) -> None:
         self.patience = patience
         self.min_delta = min_delta
@@ -220,6 +235,11 @@ class EarlyStopper:
         self.min_validation_loss = float('inf')
 
     def early_stop(self, validation_loss: float) -> bool:
+        """
+        Loss check to see if the training should be stopped
+
+        param: validation_loss: float: validation loss
+        """
         if validation_loss < self.min_validation_loss:
             self.min_validation_loss = validation_loss
             self.counter = 0
@@ -232,7 +252,7 @@ class EarlyStopper:
 
 def seed_everything(seed: int=1234) -> None:
     """
-    Set seed for reproducibility. 
+    Set seed for reproducibility. It will seed python default random, numpy, torch, and cuda. 
 
     param: seed: int: seed number
     """

@@ -1,10 +1,8 @@
-# Modified code from https://github.com/Tsedao/MultiRM/blob/master/Scripts/util_ig.py by Song et al.
 import torch
 from torch import nn
 import time
 import gc
 import numpy as np
-import pandas as pd
 from captum.attr import IntegratedGradients
 from typing import Callable
 

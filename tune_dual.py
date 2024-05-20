@@ -13,6 +13,7 @@ from wrapper.utils import seed_everything, initialize_kaiming_weights
 from torch.utils.data import DataLoader
 from argparse import ArgumentParser, ArgumentTypeError
 import math
+from ray.train import Checkpoint
 FOLD = 5  # Need to change to 5
 
 
@@ -275,6 +276,11 @@ def main(num_samples=50, max_num_epochs=50, gpus_per_trial=1, args=None):
     results = tuner.fit()
 
     best_result = results.get_best_result("avg_val_loss", "min")
+    best_result = results.get_best_result("mean_accuracy", mode="max")
+
+    # with best_result.checkpoint.as_directory() as checkpoint_dir:
+    #     state_dict = torch.load(os.path.join(checkpoint_dir, "model.pth"))
+
     print(f"Saving the summary into a dataframe... ")
     results_df = results.get_dataframe()
     results_df.to_csv(

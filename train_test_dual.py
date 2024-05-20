@@ -238,7 +238,7 @@ if __name__ == "__main__":
     from wrapper.utils import plot_loss_function, plot_correlation, seed_everything, initialize_kaiming_weights, BMCLoss
     from torchinfo import summary
     import wrapper.weighted_losses as wloss
-    from model import NaiveModelV1, NaiveModelV2, NaiveModelV3, MultiRMModel, ConvTransformerModel, ConfigurableModelWoBatchNorm, TestMotifModel, TestMotifModel2, TestMotifModel3, LSTMOnly, TestMotifModelWithSelfAttention, TestMotifModelWithSelfAttention2, AttentionOnly, TestMotifModelBranchedEnd, TestMotifModelDropoutTest, ConfigurableModel
+    from model import ConfigurableModel
     import sys
     import subprocess
 
@@ -395,58 +395,21 @@ if __name__ == "__main__":
             dual_outputs = True
             input_size = train_dataset.seq.shape[2]
             logging.info(f"Input size: {input_size}")
-
-            config = {'cnn_first_filter': 16, 'cnn_first_kernel_size': 9, 'cnn_length': 3, 'cnn_filter': 32, 'cnn_kernel_size': 7, 'bilstm_layer': 3,
-                      'bilstm_hidden_size': 128, 'fc_size': 64, 'lr': args.learning_rate, 'batch_size': args.batch_size, 'patience': args.patience, 'weighted_loss': args.weighted_loss}
             
             fixed_tune_config = {'lr': 0.001, 'weight_decay': 0.1, 'cnn_first_filter': 24, 'cnn_first_kernel_size': 7, 'cnn_length': 3, 'cnn_filter': 32, 'cnn_kernel_size': 7, 'bilstm_layer': 3, 'bilstm_hidden_size': 256, 'fc_size': 256}
 
             if args.embedding == "one-hot":
                 if args.m6A_info == "level_channel" or args.m6A_info == "flag_channel":
-                    # model = NaiveModelV2(input_channel=5, cnn_first_filter=8, input_size=input_size)
-                    # model = ConvTransformerModel(input_channel=5)
-                    # model = MultiRMModel(1, True)
-                    # model = ConfigurableModelWoBatchNorm(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                    # cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
-                    # output_size=2)
-                    # model = LSTMOnly(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                    #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
-                    #             output_size=2)
-                    # model = TestMotifModelWithSelfAttention(input_channel=5, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                    #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=1024,
-                    #             output_size=2)
-                    model = TestMotifModelBranchedEnd(input_channel=5, input_size=input_size, cnn_first_filter=config["cnn_first_filter"],
-                                                      cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                                                      cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"], output_size=2)
-                    # model = AttentionOnly(input_channel=5, encoder_head=5, num_encoder_layer=6, encoder_dim_feedforward=2048, output_size=2)
+                    model = ConfigurableModel(input_channel=5, input_size=input_size, cnn_first_filter=fixed_tune_config["cnn_first_filter"], cnn_first_kernel_size=fixed_tune_config["cnn_first_kernel_size"],
+                                            cnn_other_filter=fixed_tune_config["cnn_filter"], cnn_other_kernel_size=fixed_tune_config["cnn_kernel_size"], bilstm_layer=fixed_tune_config["bilstm_layer"], bilstm_hidden_size=fixed_tune_config["bilstm_hidden_size"], fc_size=fixed_tune_config["fc_size"], output_size=2)
                 else:
-                    # model = NaiveModelV2(input_channel=4, cnn_first_filter=8, input_size=input_size, output_dim=2)
-                    # model = ConvTransformerModel(input_channel=4)
-                    # model = MultiRMModel(1, True)
-                    # model = ConfigurableModelWoBatchNorm(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                    #             cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
-                    #             output_size=2)
-                    # model = LSTMOnly(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                    #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
-                    #             output_size=2)
-                    # model = TestMotifModelWithSelfAttention(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                    #             cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], encoder_head=8, num_encoder_layer=3, encoder_dim_feedforward=1024,
-                    #             output_size=2)
-                    # model = AttentionOnly(input_channel=4, encoder_head=4, num_encoder_layer=6, encoder_dim_feedforward=2048, output_size=2)
-
-                    # model = TestMotifModel(input_channel=4, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                    #                         cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
-                    #                         output_size=2)
-                    # model = TestMotifModel(input_channel=4, input_size=input_size, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                    #                         cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config["cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
-                    #                         output_size=2)
                     model = ConfigurableModel(input_channel=4, input_size=input_size, cnn_first_filter=fixed_tune_config["cnn_first_filter"], cnn_first_kernel_size=fixed_tune_config["cnn_first_kernel_size"],
                                             cnn_other_filter=fixed_tune_config["cnn_filter"], cnn_other_kernel_size=fixed_tune_config["cnn_kernel_size"], bilstm_layer=fixed_tune_config["bilstm_layer"], bilstm_hidden_size=fixed_tune_config["bilstm_hidden_size"], fc_size=fixed_tune_config["fc_size"], output_size=2)
 
             if args.embedding == "gene2vec":
-                model = ConfigurableModelWoBatchNorm(input_channel=300, cnn_first_filter=config["cnn_first_filter"], cnn_first_kernel_size=config["cnn_first_kernel_size"],
-                                                     cnn_length=config["cnn_length"], cnn_other_filter=config["cnn_filter"], cnn_other_kernel_size=config[
-                                                         "cnn_kernel_size"], bilstm_layer=config["bilstm_layer"], bilstm_hidden_size=config["bilstm_hidden_size"], fc_size=config["fc_size"],
+                model = ConfigurableModel(input_channel=300, cnn_first_filter=fixed_tune_config["cnn_first_filter"], cnn_first_kernel_size=fixed_tune_config["cnn_first_kernel_size"],
+                                                     cnn_length=fixed_tune_config["cnn_length"], cnn_other_filter=fixed_tune_config["cnn_filter"], cnn_other_kernel_size=fixed_tune_config[
+                                                         "cnn_kernel_size"], bilstm_layer=fixed_tune_config["bilstm_layer"], bilstm_hidden_size=fixed_tune_config["bilstm_hidden_size"], fc_size=fixed_tune_config["fc_size"],
                                                      output_size=2)
 
             # Init model with kaiming normal
