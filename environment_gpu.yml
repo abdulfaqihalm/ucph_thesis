@@ -24,4 +24,5 @@ dependencies:
   - umap-learn
   - conda-forge::tensorboard
   - torchinfo
+  - plotly::plotly
 prefix: /binf-isilon/renniegrp/vpx267/miniconda3/envs/thesis_ray_gpu
