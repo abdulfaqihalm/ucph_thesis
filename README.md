@@ -1,7 +1,7 @@
 # UCPH Master Thesis repository
 
 ## Introduction
-This repository contains the code for my master's thesis with a title "Neural Network for Investigating Sequence Determinants of m6A Redistribution During Hypoxia Response". In a nutshell, given a sequence which contains either m6A site of normal or hypoxia condition in HeLa cell from GLORI paper [1], we want to create a model which could predict the stoichiometry for both conditions. Moreover, we also want to know what are the motifs which might drive the difference between the two conditions.
+This repository contains the code for my master's thesis with a title "Neural Network for Investigating Sequence Determinants of m6A Redistribution During Hypoxia Response". In a nutshell, given a sequence which contains either m6A site of normal or hypoxia condition in HeLa cell from GLORI paper [1], Our goal is to create a model which could predict the stoichiometry for both conditions and find the local sequences determinant which might drive the difference between the two conditions.
 
 
 ## Instruction to Run
@@ -13,7 +13,7 @@ For python you can just run it with conda
 conda env create -f environment_gpu.yaml
 ```
 For R, just install all the packages from two main R files manually.
-
+Furthermore, we use TOMTOM for the motif comparison. Hence you need to install MEME suites (see: [meme-suite.org/meme/doc/install.html](https://meme-suite.org/meme/doc/install.html)) 
 
 ### Data Preparation
 To prepare the data, you need to run the train_test_split.R that processes the GLORI raw data and split it into 5-folds based on the gene: 
