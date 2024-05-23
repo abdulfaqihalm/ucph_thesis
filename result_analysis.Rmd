@@ -37,6 +37,7 @@ library(rjson)
 library(ggimage) # for geom_image
 library(lmtest) # for robust standard error
 library(ggcorrplot) # for correlation plot
+library(memes) # for tomtom
 
 
 library(reticulate) # For Python packages
@@ -524,7 +525,7 @@ nt_freqs
 sequences <- list()
 for(fold in 1:NUM_FOLDS)
 {
-  npz <- np$load(paste0("first_layer_fold_",fold,"_seqs_fixed_tune.npz"), allow_pickle = TRUE) # contains "filter_{i}" for each npz
+  npz <- np$load(paste0("analysis/motifs_importance/first_layer_fold_",fold,"_seqs_fixed_tune.npz"), allow_pickle = TRUE) # contains "filter_{i}" for each npz
   sequences[[fold]] <- npz 
 }
 # features_1 <- abind(features_1)
@@ -576,16 +577,21 @@ for (fold in c(1:NUM_FOLDS)){
 TOMTOM match for all logos
 NOTE: You need to have MEMES tool installed on your machine
 ```{r}
-check_meme_install()
+memes::check_meme_install()
 ```
 
 
 ```{r}
 # MEME Suite Software version meme-5.5.5 December 07, 2023
 # Database version Motif Databases (updated 13 Jan 2024)
-db_file <-"data/analysis/CISBP-RNA/Homo_sapiens.meme"
+# Somehwo the tomtom still return the reverse complement match. need to manually remove it 
+
+
+
+
+db_file <-"data/CISBP-RNA/Homo_sapiens.meme"
 # We force TOMTOM to work on non-RC since we expect that the nascent RNA will not be reverse-transcribed 
-tomtom_result <- memes::runTomTom(unlist(motList), database = db_file, thresh = 0.1, norc="")
+tomtom_result <- memes::runTomTom(unlist(motList), database = db_file, thresh = 0.1, norc = TRUE )
 tomtom_mathed_result_df <- NULL
 for(i in 1:length(tomtom_result)){
   if("best_match_altname" %in% colnames(tomtom_result[[i]])){
@@ -602,7 +608,8 @@ for(i in 1:dim(tomtom_mathed_result_df)[1]){
   temp_motif <- tomtom_mathed_result_df[i,"motif"][[1]]
   temp_best_match <- tomtom_mathed_result_df[i,"best_match_motif"][[1]] # best_match based on the lowest e-value
   temp_best_match@name <- str_extract(temp_best_match@altname, "[\\w\\-\\_]+") # match the first (human) altname
-  p <- universalmotif::view_motifs(c(temp_motif, temp_best_match)) + labs(title = paste0("e-val: ", tomtom_mathed_result_df[i,"best_match_eval"])) + theme(axis.title.y = element_blank()) 
+  # Need to force the view_motifs to set a particular min.overlap
+  p <- universalmotif::view_motifs(c(temp_motif, temp_best_match), tryRC=FALSE, min.overlap = 4) + labs(title = paste0("e-val: ", tomtom_mathed_result_df[i,"best_match_eval"])) + theme(axis.title.y = element_blank(), axis.title=element_text(size=14,face="bold")) 
   match_plot_list[[i]] <- p 
   
   temp_df <- data.frame(filter_name = temp_motif@name, consensus = temp_motif@consensus,
@@ -683,7 +690,7 @@ for (fold in 1:NUM_FOLDS){
 # See the duplicated motifs 
 dup_mots <- mot_df |> 
   dplyr::group_by(consensus) |> 
-  dplyr::summarise(fold_count = n_distinct(fold), count = n()) |> 
+  dplyr::summarise(fold_count = dplyr::n_distinct(fold), count = dplyr::n()) |> 
   dplyr::arrange(desc(fold_count)) |> 
   dplyr::filter(fold_count>1)
 dup_mots
@@ -730,7 +737,7 @@ for (fold in 1:NUM_FOLDS){
     dplyr::select(c(motif, sequence.i, consensus,score)) |> 
     dplyr::group_by(motif, sequence.i, consensus) |> 
     # summarise(sum_score=sum(score), count=n()) |> 
-    dplyr::summarise(count=n()) |> 
+    dplyr::summarise(count=dplyr::n()) |> 
     dplyr::mutate(fold = fold) |> 
     dplyr::ungroup()
   
@@ -752,7 +759,7 @@ y_data <- final_data$pred_diff
 ```
 
 
-
+lets plots the Pairwise Pearson correlation of the occurrence of extracted motifs fromthe first CNN layer
 ```{r}
 ggcorrplot::ggcorrplot(cor(final_data |> dplyr::select(!c(fold, sequence.i, pred_diff, true_diff))), hc.order=TRUE) + 
   theme(axis.text.x = element_text(angle = 90, size = 8),
@@ -970,8 +977,8 @@ ggplot(data =  plot_data, mapping = aes(x = Estimate, y = reorder(coeff, -Estima
 
 ```{r}
 pos_motif <- plot_data |> 
-  filter(alpha == 1, EffectSign=="Positive") |> 
-  pull(coeff)
+  dplyr::filter(alpha == 1, EffectSign=="Positive") |> 
+  dplyr::pull(coeff)
 for (mot in pos_motif){
   for (filter in unlist(motList)) {
     if (filter@consensus == mot) {
@@ -985,8 +992,8 @@ for (mot in pos_motif){
 
 
 neg_motif <- plot_data |> 
-  filter(alpha == 1, EffectSign=="Negative") |> 
-  pull(coeff)
+  dplyr::filter(alpha == 1, EffectSign=="Negative") |> 
+  dplyr::pull(coeff)
 for (mot in neg_motif){
   for (filter in unlist(motList)) {
     if (filter@consensus == mot) {
@@ -1030,6 +1037,7 @@ for(i in 1:NUM_FOLDS){
 
 
 
+Here we plot the motif occurence for example for fold2_filter23 which is one of the most frequent 7-mers motif in human genome
 ```{r}
 fold <- 2 
 filter <- 23
@@ -1099,11 +1107,11 @@ plot_mot_df <- mot_df |>
     )) |> 
   dplyr::select(!c(filter_name, motif)) |> 
   dplyr::group_by(coeff, Estimate, rbm15_align, tomtom_best_match, color_flag, shape_flag, text_label) |> 
-  dplyr::summarise(count = sum(count)) #sum (previously mean) since GUCUUUU, GAACUUU, and GGACUGU are appear in more than once
+  dplyr::summarise(count = mean(count)) #sum (previously mean) since GUCUUUU, GAACUUU, and GGACUGU are appear in more than once
 
 p <- ggplot(data = plot_mot_df,  mapping = aes(x = count, y = Estimate, color=color_flag)) + 
-  geom_point(mapping = aes(alpha=abs(Estimate*10), shape=shape_flag, size=2.7)) + theme_minimal() + theme(legend.position=c(0.9, 0.9), legend.text = element_text(size=12), axis.title=element_text(size=14), axis.text = element_text(size=12)) + geom_hline(yintercept = 0, color = "grey", linetype = "dashed") + geom_text_repel(mapping = aes(label = text_label), size=4) + labs(x = "Motif Occurence", y = latex2exp::TeX("Estimated Effect Size on Predicted $\\Delta$m6A (Predicted Hypoxia m6A level - Predicted Normal m6A level")) +  scale_colour_manual(name="Annotation", values = c("RBM15_align" = "#F8766D","TOTOM_match" = "#00BFC4", "unannotated" = "black")) + guides(shape = "none", size = "none", alpha= "none", color = guide_legend( 
-    override.aes=aes(label = "")))
+  geom_point(mapping = aes(alpha=abs(Estimate*10), shape=shape_flag, size=2.7)) + theme_minimal() + theme(legend.position=c(0.9, 0.9), legend.text = element_text(size=12), axis.title=element_text(size=14), axis.text = element_text(size=12)) + geom_hline(yintercept = 0, color = "grey", linetype = "dashed") + geom_text_repel(mapping = aes(label = text_label), size=4) + labs(x = "Motif Occurence", y = latex2exp::TeX("Estimated Effect Size on Predicted Differences in m6A Levels (Hypoxia - Normal)")) +  scale_colour_manual(name="Annotation", values = c("RBM15_align" = "#F8766D","TOTOM_match" = "#00BFC4", "unannotated" = "black")) + guides(shape = "none", size = "none", alpha= "none", color = guide_legend( 
+    override.aes=aes(label = ""))) # Estimated Effect Size of Motif Occurrences on Predicted Differences in m6A Levels between Hypoxia and Normal Conditions
 p_hist_estimate <- ggplot(data = plot_mot_df, mapping = aes(x = count)) + geom_histogram() + theme_minimal() + 
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.border = element_blank(),
         axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank(),
@@ -1117,76 +1125,6 @@ empty <- ggplot()+geom_point(aes(1,1), colour="white")+
                panel.background=element_blank(), 
                axis.text.x=element_blank(), axis.text.y=element_blank(),           
                axis.title.x=element_blank(), axis.title.y=element_blank())
-grid.arrange(p_hist_estimate, empty, p, p_hist_icscore, ncol=2, nrow=2, widths=c(6, 1), heights=c(1, 6))
+grid.arrange(p_hist_estimate, empty, p, p_hist_icscore, ncol=2, nrow=2, widths=c(7, 1), heights=c(1, 7))
 
 ```
-
-
-
-```{r}
-top_motif_dist_df <- NULL
-for(i in 1:NUM_FOLDS){
-  temp <- scan_list[[i]] |> 
-    dplyr::filter(consensus %in% c(neg_motif, pos_motif)) |> 
-    dplyr::rowwise() |> 
-    dplyr::mutate(
-      m6A_pos = data_split_TEST[[i]][[sequence.i, "start"]],
-      gene = data_split_TEST[[i]][[sequence.i, "gene"]],
-      gene_type = data_split_TEST[[i]][[sequence.i, "gene_type"]],
-      tx_id = data_split_TEST[[i]][[sequence.i, "tx_id"]],
-      mot_start = start,
-      rel_start = start + m6A_pos - 500,
-      rel_end = stop + m6A_pos - 500,
-      chr = data_split_TEST[[i]][[sequence.i, "seqnames"]],
-      pred_control = valid_data_list[[i]][[sequence.i, "pred_control"]],
-      pred_case = valid_data_list[[i]][[sequence.i, "pred_case"]],
-      regulation_flag = case_when(pred_case - pred_control  < -0.1 ~ "down",
-                                  pred_case - pred_control > 0.1 ~ "up",
-                                  .default = "no_change")
-    ) |> 
-    dplyr::ungroup() |> 
-    dplyr::select(motif, consensus, gene,  gene_type, tx_id, chr,  m6A_pos, mot_start, rel_start, rel_end, pred_control, pred_case, regulation_flag)
-  top_motif_dist_df <- dplyr::bind_rows(top_motif_dist_df, temp)
-}
-
-
-# top_motif_dist_df |> dplyr::filter(gene_type == "protein_coding", chr != "chrX", chr != "chrY") |> dplyr::group_by(gene) |> dplyr::summarise(n=n()) |> dplyr::ungroup() |> dplyr::arrange(desc(n))
-```
-
-
-```{r}
-ggplot(data=top_motif_dist_df |> dplyr::filter(consensus %in% c("UAGCCCC", "WGGUAGG", "AGGUAAG", "HSCGAAU", "GUCSACS", "WSGAAGA")) ) + geom_density(mapping = aes(x=mot_start, color=regulation_flag)) + facet_wrap(vars(consensus))
-```
-
-
-
-
-
-```{r}
-temp_select_gene <- top_motif_dist_df |> dplyr::filter(gene_type == "protein_coding", chr != "chrX", chr != "chrY") |> dplyr::filter(gene=="VEGFA")
-mrna_plot_data |> dplyr::left_join(top_motif_dist_df |> dplyr::filter(gene_type == "protein_coding", chr != "chrX", chr != "chrY")  |> dplyr::select(mot_start, rel_start, rel_end, consensus, m6A_pos), by = join_by(start==m6A_pos))
-
-
-coba <- mrna_plot_data |> dplyr::left_join(top_motif_dist_df |> dplyr::filter(gene_type == "protein_coding", chr != "chrX", chr != "chrY")  |> dplyr::select(mot_start, rel_start, rel_end, consensus, m6A_pos), by = join_by(start==m6A_pos))
-
-coba |> dplyr::filter(gene=="PHF13")
-```
-
-```{r}
-coba2 <- coba |> 
-    dplyr::mutate(mot_pos_flag = ifelse(strand_gene == "+", 
-                                    case_when(rel_start < cds_start ~ "5UTR",
-                                              rel_start >= cds_start & rel_start < utr3_start ~ "CDS",
-                                              rel_start >= utr3_start ~ "3UTR"),
-                                    case_when(rel_start > cds_start ~ "5UTR", 
-                                              rel_start <= cds_start & rel_start > utr3_start ~ "CDS",
-                                              rel_start <= utr3_start ~ "3UTR"))) |> 
-  dplyr::distinct()
-```
-
-
-```{r}
-ggplot(data = coba2 |> dplyr::filter(!is.na(rel_start)) |> dplyr::select(consensus, mot_pos_flag, mot_start, rel_start) |> dplyr::distinct()) +
-  geom_density(mapping = aes(x = mot_start, color = consensusj))
-```
-
