@@ -38,12 +38,7 @@ def plot_ism_scatter(y_delta:torch.Tensor, target:int, fold:int, slice_start:int
 	data = y_delta[:,:,:,target]
 	data = data.reshape(-1,1001)
 	data = data[:,slice_start:slice_end].numpy()
-	print(data.shape)
-	# Generate x values: from -100 to 99
-
-	mutation_size = slice_end - slice_start
-	x = np.arange(-mutation_size//2, mutation_size//2)
-	print(x.shape)
+	x = list(range(slice_start-500,slice_end-500))
 	# Plotting each row against xfig, ax = plt.subplots(figsize=(45, 5))
 	fig, ax = plt.subplots(figsize=(24, 10))
 	for i in range(data.shape[0]):
